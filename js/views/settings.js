@@ -4,7 +4,7 @@ import { section } from './dashboard.js';
 import { roleLabel } from './teams.js';
 import { toCSV, flatRows, FLAT_COLUMNS } from '../stats.js';
 import { inDemoSession } from '../store/index.js';
-import { ACCENT_PRESETS, DEFAULT_ACCENT, applyAccent, isHex } from '../theme.js';
+import { ACCENT_PRESETS, DEFAULT_ACCENT, applyAccent, isHex, FONT_STYLES, applyFont, deviceFont } from '../theme.js';
 
 export async function settingsView() {
   const t = state.team;
@@ -47,6 +47,11 @@ export async function settingsView() {
         catch (e) { toast(e.message, 'error'); }
       },
     }, 'Save') : null)));
+
+  // ---- Font (this device) ----
+  root.append(section('Font style', 'Saved on this device', h('label', {}, 'Font style',
+    h('select', { onchange: e => { localStorage.setItem('kf-font', e.target.value); applyFont(e.target.value); toast('Font updated'); } },
+      FONT_STYLES.map(([k, l]) => h('option', { value: k, selected: deviceFont() === k }, l))))));
 
   // ---- Roster ----
   root.append(section('Roster', 'Gamertags are used to match screenshot rows to players', rosterEditor()));

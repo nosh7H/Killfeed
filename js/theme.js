@@ -1,9 +1,9 @@
 // Per-team accent color. Buttons, highlights and the brand mark follow the team's
 // color; data marks in charts keep their own fixed color so charts read the same for every team.
 
-export const DEFAULT_ACCENT = '#f2a93b';
+export const DEFAULT_ACCENT = '#b69cff';
 export const ACCENT_PRESETS = [
-  ['#f2a93b', 'Amber'], ['#e5484d', 'Red'], ['#30a46c', 'Green'], ['#12a594', 'Teal'],
+  ['#b69cff', 'Light purple'], ['#f2a93b', 'Amber'], ['#e5484d', 'Red'], ['#30a46c', 'Green'], ['#12a594', 'Teal'],
   ['#3e8ef7', 'Blue'], ['#8e4ec6', 'Violet'], ['#e93d82', 'Pink'], ['#e8e8e8', 'White'],
 ];
 
@@ -33,3 +33,16 @@ export function applyAccent(color) {
   // accent used AS text on the dark background: lighten very dark picks so it stays readable
   root.setProperty('--accent-text', L < 0.12 ? mix(hex, '#ffffff', 0.45) : hex);
 }
+
+// Font styles — see the [data-font] blocks at the top of css/styles.css
+export const FONT_STYLES = [
+  ['mix', 'Mix (recommended): Chakra Petch headings, IBM Plex text, JetBrains Mono numbers, Big Shoulders on the TV'],
+  ['tactical', 'Tactical HUD: Chakra Petch + IBM Plex Sans'],
+  ['analyst', 'Analyst: Space Grotesk + JetBrains Mono numbers'],
+  ['stadium', 'Stadium: Big Shoulders Display + Archivo'],
+];
+export function applyFont(style) {
+  const ok = FONT_STYLES.some(([k]) => k === style);
+  document.documentElement.dataset.font = ok ? style : 'mix';
+}
+export const deviceFont = () => localStorage.getItem('kf-font') || 'mix';
