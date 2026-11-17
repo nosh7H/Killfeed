@@ -16,6 +16,7 @@ create table if not exists public.teams (
   invite_code text not null unique default upper(substr(md5(random()::text), 1, 8)),
   maps        text[] not null default '{}',
   modes       text[] not null default array['Hardpoint','Search & Destroy','Control'],
+  accent      text check (accent ~ '^#[0-9a-fA-F]{6}$'),
   created_by  uuid references auth.users(id) default auth.uid(),
   created_at  timestamptz not null default now()
 );
@@ -104,6 +105,9 @@ create table if not exists public.vod_marks (
   created_by uuid references auth.users(id) default auth.uid(),
   created_at timestamptz not null default now()
 );
+
+-- for projects created before team colors existed (safe to re-run)
+alter table public.teams add column if not exists accent text check (accent ~ '^#[0-9a-fA-F]{6}$');
 
 create index if not exists games_team_idx  on public.games(team_id);
 create index if not exists stats_team_idx  on public.stats(team_id);

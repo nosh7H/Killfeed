@@ -7,10 +7,14 @@
 // supabase/schema.sql protects the data.
 // ============================================================
 
-export const SUPABASE_URL = 'https://gzlrtkboucdokqkbslzw.supabase.co';        // e.g. 'https://abcdxyz.supabase.co'
-export const SUPABASE_ANON_KEY = 'sb_publishable_t09-qz4zAoNbHHLvKl2CYg_S8tmhujF';   // Project Settings → API → anon public key
+export const SUPABASE_URL = '';        // e.g. 'https://abcdxyz.supabase.co'
+export const SUPABASE_ANON_KEY = '';   // Project Settings → API → anon public key
 
 export const SITE_NAME = 'Killfeed';
+
+// Show a "Try the demo" button on the sign-in page (cloud mode only).
+// The demo runs entirely in the visitor's browser with a sample team.
+export const SHOW_DEMO = true;
 
 // Default modes for new teams (owners can edit per team)
 export const DEFAULT_MODES = ['Hardpoint', 'Search & Destroy', 'Control'];

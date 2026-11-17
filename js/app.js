@@ -1,6 +1,6 @@
 import { h, $, clear, toast } from './ui.js';
 import { SITE_NAME } from './config.js';
-import { createStore, cloudConfigured } from './store/index.js';
+import { createStore, cloudConfigured, inDemoSession, exitDemo } from './store/index.js';
 import { state, selectTeam, refreshTeams, teamPath, go } from './state.js';
 import { authView } from './views/auth.js';
 import { teamsView } from './views/teams.js';
@@ -11,6 +11,7 @@ import { gameView } from './views/game.js';
 import { playerView } from './views/player.js';
 import { settingsView } from './views/settings.js';
 import { initTooltips } from './tooltip.js';
+import { applyAccent } from './theme.js';
 
 const main = () => $('#main');
 
@@ -38,6 +39,15 @@ async function route() {
   if (!state.user) { mount(authView()); return; }
   if (hash === '#/' || hash === '#') {
     await refreshTeams();
+    if (sessionStorage.getItem('kf-demo-seed') === '1') {
+      sessionStorage.removeItem('kf-demo-seed');
+      if (!state.teams.length) {
+        const { loadSample } = await import('./sample.js');
+        const t = await loadSample(state.store);
+        await refreshTeams();
+        return go(`#/t/${t.id}/dashboard`);
+      }
+    }
     const last = localStorage.getItem('kf-last-team');
     return go(state.teams.find(t => t.id === last) ? `#/t/${last}/dashboard` : '#/teams');
   }
@@ -67,6 +77,7 @@ function mount(node) {
 function renderNav() {
   const nav = clear($('#nav'));
   const hash = location.hash;
+  applyAccent(state.team && hash.startsWith('#/t/') ? state.team.accent : null);
   nav.append(h('a', { class: 'brand', href: '#/' }, h('span', { class: 'brand-mark' }, '◣'), SITE_NAME));
   if (!state.user) return;
 
@@ -87,7 +98,10 @@ function renderNav() {
     state.teams.map(t => h('option', { value: t.id, selected: t.id === state.team?.id }, t.tag ? `[${t.tag}] ${t.name}` : t.name)),
     h('option', { value: '__manage' }, '＋ Manage teams…')));
   }
-  if (state.store.mode === 'local') right.append(h('span', { class: 'pill pill-demo', 'data-tip': 'Data is saved in this browser only. Add Supabase keys in js/config.js to enable shared teams.' }, 'Demo mode'));
+  if (inDemoSession()) {
+    right.append(h('span', { class: 'pill pill-demo', 'data-tip': 'You are trying the demo. Nothing here is shared or saved to an account.' }, 'Demo'),
+      h('button', { class: 'btn btn-primary btn-sm', onclick: exitDemo }, 'Exit demo · Sign up'));
+  } else if (state.store.mode === 'local') right.append(h('span', { class: 'pill pill-demo', 'data-tip': 'Data is saved in this browser only. Add Supabase keys in js/config.js to enable shared teams.' }, 'Demo mode'));
   else right.append(h('button', {
     class: 'btn btn-ghost btn-sm', onclick: async () => { await state.store.signOut(); state.user = null; state.team = null; go('#/'); },
   }, 'Sign out'));

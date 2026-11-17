@@ -13,6 +13,7 @@ A static website for Call of Duty teams to log scrims and matches, upload scoreb
 - **VOD review.** Embed a YouTube or Twitch VOD per map, or open a local recording. Add timestamped notes with tags. Click a note to jump to that moment.
 - **Data.** Export CSV (all games or the filtered view), back up and restore with JSON.
 - **Demo mode.** It works with no backend; data stays in the browser. A **Load sample team** button fills it with example data.
+- **Try the demo.** Once Supabase is connected, the sign-in page has a **Try the demo** button. Visitors can explore a sample team in their own browser without an account. To hide it, add `export const SHOW_DEMO = false;` to `js/config.js`.
 
 ## 1. Put it on GitHub Pages (5 min)
 
@@ -49,11 +50,22 @@ team ─┬─ members (role)
                   └─ vod_marks (timestamped notes)
 ```
 
+## Updating an existing Supabase project
+
+If you ran `schema.sql` before team colors were added, run this once in the SQL Editor:
+
+```sql
+alter table public.teams add column if not exists accent text check (accent ~ '^#[0-9a-fA-F]{6}$');
+```
+
+(Re-running the whole `schema.sql` also works and is safe.)
+
 ## Customizing
 
 - **Map pool and modes**: set per team in **Team settings**. New maps you type while logging get added automatically.
 - **Stat columns**: edit `STAT_FIELDS` in `js/config.js`. To add a stat, also add a column to the `stats` table in `supabase/schema.sql` (`alter table stats add column ...`).
-- **Site name**: `SITE_NAME` in `js/config.js`. Colors are at the top of `css/styles.css`.
+- **Team color**: owners pick one under **Team settings** (presets or any custom color). Buttons and highlights switch to it when you're in that team. Charts keep fixed colors so they read the same for everyone.
+- **Site name**: `SITE_NAME` in `js/config.js`. Default colors are at the top of `css/styles.css`.
 
 ## OCR tips
 
