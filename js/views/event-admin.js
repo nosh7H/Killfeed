@@ -1,15 +1,14 @@
-// Event admin: Setup (format, teams, groups, playoffs, display) and Control room (queue + setups).
+// Event admin: Setup (format, teams, groups, playoffs, display). Control panel + rows live in event-control.js.
 import { h, clear, toast, confirmDialog, uid, download } from '../ui.js';
 import { state, go } from '../state.js';
-import { ev, eventPath, refreshEvent, eventSettings, teamName, watchEvent, groupsFor, teamBadge, exportEvent, DEFAULT_EVENT_SETTINGS } from '../event-state.js';
-import { snakeGroups, roundRobin, buildBracket, GROUP_LABELS, roundName, queue } from '../event-logic.js';
+import { ev, eventPath, refreshEvent, eventSettings, teamName, groupsFor, teamBadge, exportEvent, DEFAULT_EVENT_SETTINGS } from '../event-state.js';
+import { snakeGroups, roundRobin, buildBracket, GROUP_LABELS } from '../event-logic.js';
 import { eventShell } from './event.js';
 import { FONT_STYLES, DEFAULT_ACCENT, applyFont } from '../theme.js';
-import { statusPill } from './event-parts.js';
 
 const lines = v => [...new Set(String(v || '').split('\n').map(s => s.trim()).filter(Boolean))];
 const SCENES = [
-  ['groups', 'Group standings'], ['kd:*', 'K/D leaders per mode (one screen per mode)'], ['teams', 'Team stats'],
+  ['live', 'Live matches with live scores + up next'], ['groups', 'Group standings'], ['kd:*', 'K/D leaders per mode (one screen per mode)'], ['teams', 'Team stats'],
   ['bracket', 'Bracket'], ['awards', 'Awards (MVP, Obj King, Slayer…)'], ['queue', 'Live and up next (full screen)'],
 ];
 
@@ -65,17 +64,7 @@ export function eventSetup() {
     const bracket = h('select', {}, h('option', { value: 'double', selected: s.bracket === 'double' }, 'Double elimination'), h('option', { value: 'single', selected: s.bracket === 'single' }, 'Single elimination'));
     const modes = h('textarea', { rows: 4 }, s.modes.join('\n'));
     const order = h('input', { value: s.mode_order.join(', ') });
-    let podNames = [...s.stations];
-    const podCount = h('input', { type: 'number', min: 1, max: 32, value: podNames.length, class: 'in-num' });
-    const podGrid = h('div', { class: 'pod-names' });
-    const renderPods = () => {
-      const n = Math.max(1, Math.min(32, +podCount.value || 1));
-      while (podNames.length < n) podNames.push(`Pod ${podNames.length + 1}`);
-      podNames = podNames.slice(0, n);
-      clear(podGrid).append(...podNames.map((name, i) => h('input', { value: name, 'aria-label': `Pod ${i + 1} name`, oninput: e => { podNames[i] = e.target.value; } })));
-    };
-    podCount.oninput = renderPods;
-    renderPods();
+    const vetoM = h('select', {}, h('option', { value: 'online', selected: s.veto_method !== 'in_person' }, 'Captain links (online)'), h('option', { value: 'in_person', selected: s.veto_method === 'in_person' }, 'In person (staff enters the maps)'));
     const maps = Object.fromEntries(s.modes.map(m => [m, h('textarea', { rows: 5, placeholder: 'One map per line' }, (s.maps[m] || []).join('\n'))]));
     return panel('Format', 'Groups, bracket, series length, modes, maps and pods',
       h('div', { class: 'grid-6' },
@@ -83,8 +72,8 @@ export function eventSetup() {
         h('label', {}, 'Group Bo', gbo), h('label', {}, 'Playoff Bo', pbo), h('label', {}, 'Grand final Bo', fbo)),
       h('div', { class: 'grid-3' },
         h('label', {}, 'Modes', modes, h('span', { class: 'hint' }, 'One per line.')),
-        h('div', { class: 'field' }, h('span', {}, 'Pods'), h('label', { class: 'inline' }, 'How many', podCount), podGrid,
-          h('span', { class: 'hint' }, 'Name them anything. For a 40-PC lab (8 rows of 5, 4 sections), one match per section: team A on one row, team B on the other, the 5th PC in each row as a spare or observer.')),
+        h('div', { class: 'field' }, h('span', {}, 'Rows and pods'), h('p', { class: 'hint' }, 'Pin teams to their group-stage rows and name the bracket rows on ', h('a', { href: eventPath('seating') }, 'Rows & pods'), '.'),
+          h('label', {}, 'Default veto', vetoM, h('span', { class: 'hint' }, 'Staff can always override or switch a single match on its page.'))),
         h('label', {}, 'Mode order per series', order, h('span', { class: 'hint' }, 'Comma separated. Repeats for longer series.'))),
       h('div', { class: 'grid-3' }, s.modes.map(m => h('label', {}, `${m} maps`, maps[m]))),
       h('div', {}, h('button', {
@@ -93,7 +82,7 @@ export function eventSetup() {
           await saveSettings({
             groups: groups.value === 'auto' ? 'auto' : +groups.value, advance: advance.value === 'all' ? 'all' : +advance.value, bracket: bracket.value,
             group_bo: +gbo.value || 5, playoff_bo: +pbo.value || 5, final_bo: +fbo.value || 5,
-            modes: ms, stations: podNames.map((n, i) => n.trim() || `Pod ${i + 1}`),
+            modes: ms, veto_method: vetoM.value,
             mode_order: order.value.split(',').map(x => x.trim()).filter(Boolean),
             maps: Object.fromEntries(ms.map(m => [m, maps[m] ? lines(maps[m].value) : (ev.settings.maps[m] || [])])),
           });
@@ -283,6 +272,7 @@ export function eventSetup() {
     secs.oninput = () => { secsOut.textContent = `${secs.value}s`; };
     const minG = h('input', { type: 'number', min: 1, max: 20, value: d.min_games, class: 'in-num' });
     const ticker = h('input', { type: 'checkbox', checked: d.ticker !== false });
+    const leaders = h('input', { type: 'checkbox', checked: d.leaders !== false });
     const dfont = h('select', {}, FONT_STYLES.map(([k, l]) => h('option', { value: k, selected: (d.font || 'mix') === k }, l)));
     const enabled = new Set(d.scenes.map(x => (x.startsWith('kd:') ? 'kd:*' : x)));
     const order = SCENES.map(([k]) => k).sort((a, b) => {
@@ -306,6 +296,7 @@ export function eventSetup() {
           h('label', {}, 'Minimum maps to appear on K/D boards', minG),
           h('label', {}, 'Font style (screen)', dfont),
           h('label', { class: 'check' }, ticker, 'Show the “Live / Up next” bar on every screen'),
+          h('label', { class: 'check' }, leaders, 'Scroll category leaders (K/D per mode, obj time, first bloods…) in that bar'),
           h('p', { class: 'small' }, 'Link for OBS (Browser Source, 1920×1080) or the TV:'),
           h('div', { class: 'row' }, h('code', { class: 'url' }, url),
             h('button', { class: 'btn btn-sm', onclick: () => { navigator.clipboard.writeText(url); toast('Copied'); } }, 'Copy'))),
@@ -313,7 +304,7 @@ export function eventSetup() {
       h('div', {}, h('button', {
         class: 'btn btn-primary', onclick: async () => {
           const scenes = order.filter(k => enabled.has(k)).flatMap(k => (k === 'kd:*' ? ev.settings.modes.map(m => `kd:${m}`) : [k]));
-          await saveSettings({ display: { ...ev.settings.display, seconds: +secs.value, min_games: +minG.value || 1, ticker: ticker.checked, scenes, font: dfont.value } });
+          await saveSettings({ display: { ...ev.settings.display, seconds: +secs.value, min_games: +minG.value || 1, ticker: ticker.checked, leaders: leaders.checked, scenes, scenes_v: 2, font: dfont.value } });
           toast('Display updated — open screens switch over automatically', 'success'); paint();
         },
       }, 'Save display')));
@@ -346,95 +337,6 @@ function panel(title, sub, ...body) {
 }
 function step(n, title, text, action) {
   return h('div', { class: 'step' }, h('div', { class: 'step-n' }, n), h('div', { class: 'step-body' }, h('strong', {}, title), h('p', { class: 'small muted' }, text)), h('div', {}, action));
-}
-
-// =====================================================================
-// CONTROL ROOM
-// =====================================================================
-export function eventControl() {
-  if (!ev.isAdmin) return notAdmin('control');
-  const root = h('div');
-  let showFinal = false;
-
-  const setMatch = async (m, patch) => {
-    await state.store.evUpsert('event_matches', { ...m, ...patch, updated_at: new Date().toISOString() });
-    await refreshEvent(); paint();
-  };
-
-  const paint = () => {
-    const bm = ev.data.matches.filter(m => m.stage !== 'group');
-    const q = queue(ev.data.matches, ev.resolved);
-    const stations = ev.settings.stations;
-    const busy = new Map(ev.data.matches.filter(m => m.status === 'live' && m.station).map(m => [m.station, m]));
-    const finals = ev.data.matches.filter(m => m.status === 'final' || ev.resolved.get(m.id)?.result?.done);
-
-    const row = (m, i) => {
-      const r = ev.resolved.get(m.id);
-      return h('tr', { class: `q-${m.status}` },
-        h('td', { class: 'num muted' }, i + 1),
-        h('td', {}, h('a', { href: eventPath(`match/${m.id}`) }, teamName(r.A), h('span', { class: 'vs' }, ' vs '), teamName(r.B)),
-          h('div', { class: 'small muted' }, roundName(m, bm), ` · Bo${m.best_of}`)),
-        h('td', {}, h('select', { 'aria-label': 'Station', onchange: e => setMatch(m, { station: e.target.value || null }) },
-          h('option', { value: '' }, '— pod —'),
-          stations.map(st => h('option', { value: st, selected: m.station === st }, st + (busy.has(st) && busy.get(st).id !== m.id ? ' (busy)' : ''))))),
-        h('td', {}, h('div', { class: 'seg seg-sm' }, ['scheduled', 'ondeck', 'live', 'final'].map(st => h('button', {
-          class: m.status === st ? 'on' : '',
-          onclick: async () => {
-            if (st === 'live' && !m.station) return toast('Pick a pod first', 'error');
-            if (st === 'final' && !r.result?.done && !(await confirmDialog('No winner from the entered maps yet. Mark final anyway? The team with more maps wins.', 'Mark final'))) return;
-            setMatch(m, { status: st });
-          },
-        }, { scheduled: 'Sched', ondeck: 'On deck', live: 'Live', final: 'Final' }[st])))),
-        h('td', {}, h('div', { class: 'row' },
-          h('button', { class: 'icon-btn', 'aria-label': 'Move up', onclick: () => reorder(q, i, -1) }, '↑'),
-          h('button', { class: 'icon-btn', 'aria-label': 'Move down', onclick: () => reorder(q, i, 1) }, '↓'),
-          h('a', { class: 'btn btn-sm', href: eventPath(`match/${m.id}`) }, 'Scores'))));
-    };
-
-    const d = ev.settings.display;
-    const sceneOpts = d.scenes.map(k => [k, k.startsWith('kd:') ? `K/D · ${k.slice(3)}` : { groups: 'Group standings', teams: 'Team stats', bracket: 'Bracket', queue: 'Live and up next', awards: 'Awards' }[k] || k]);
-    clear(root).append(eventShell('control', h('div', { class: 'stack' },
-      h('div', { class: 'toolbar' },
-        h('label', { class: 'inline' }, 'Display screen',
-          h('select', {
-            onchange: async e => { await saveSettings({ display: { ...d, pin: e.target.value || null, pin_veto: null } }); toast(e.target.value ? 'Display pinned' : 'Display rotating'); paint(); },
-          }, h('option', { value: '' }, 'Rotate all screens'), sceneOpts.map(([k, l]) => h('option', { value: k, selected: d.pin === k }, `Pin: ${l}`)),
-            h('option', { value: 'veto', selected: d.pin === 'veto' }, 'Pin: Map veto (latest)'))),
-        h('a', { class: 'btn btn-ghost btn-sm', href: `#/display/${ev.event.id}`, target: '_blank', rel: 'noopener' }, 'Open display ↗')),
-      h('div', { class: 'station-grid' }, stations.map(st => {
-        const m = busy.get(st);
-        const r = m && ev.resolved.get(m.id);
-        return h('div', { class: `station ${m ? 'busy' : ''}` },
-          h('div', { class: 'eyebrow' }, st),
-          m ? h('a', { href: eventPath(`match/${m.id}`) }, h('strong', {}, `${teamName(r.A)} vs ${teamName(r.B)}`),
-            h('div', { class: 'small muted' }, r.result ? `Maps ${r.result.a}–${r.result.b}` : 'Starting')) : h('div', { class: 'muted small' }, 'Open'));
-      })),
-      panel('Queue', 'Live first, then on deck, then scheduled. Use ↑↓ to change the order teams are called.',
-        q.length ? h('div', { class: 'table-wrap' }, h('table', { class: 'data queue-table' },
-          h('thead', {}, h('tr', {}, h('th', {}, '#'), h('th', {}, 'Match'), h('th', {}, 'Pod'), h('th', {}, 'Status'), h('th', {}))),
-          h('tbody', {}, q.map(row)))) : h('div', { class: 'empty-sm' }, 'Nothing waiting. Generate group matches in Setup.')),
-      panel(`Completed (${finals.length})`, null,
-        h('button', { class: 'btn btn-sm btn-ghost', onclick: () => { showFinal = !showFinal; paint(); } }, showFinal ? 'Hide' : 'Show'),
-        showFinal ? h('div', { class: 'list' }, finals.map(m => {
-          const r = ev.resolved.get(m.id);
-          return h('a', { class: 'list-row', href: eventPath(`match/${m.id}`) },
-            h('span', {}, `${teamName(r.A)} ${r.result?.a ?? ''}–${r.result?.b ?? ''} ${teamName(r.B)}`),
-            h('span', { class: 'muted small' }, roundName(m, bm)));
-        })) : null))));
-  };
-
-  async function reorder(q, i, dir) {
-    const j = i + dir;
-    if (j < 0 || j >= q.length) return;
-    const list = [...q];
-    [list[i], list[j]] = [list[j], list[i]];
-    await state.store.evUpsert('event_matches', list.map((m, k) => ({ ...m, queue_pos: k + 1 })));
-    await refreshEvent(); paint();
-  }
-
-  paint();
-  watchEvent(() => { if (root.isConnected) paint(); });
-  return root;
 }
 
 export { DEFAULT_EVENT_SETTINGS };

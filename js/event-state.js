@@ -1,15 +1,18 @@
 // Current LAN event: data cache + everything derived from it (standings, bracket, queue).
 import { state } from './state.js';
 import {
-  resolveMatches, groupStandings, playoffSeeds, buildBracket, indexEvent, advanceCount, groupCount,
+  resolveMatches, groupStandings, playoffSeeds, buildBracket, indexEvent, advanceCount, groupCount, matchSpot,
 } from './event-logic.js';
 
 export const DEFAULT_EVENT_SETTINGS = {
   modes: ['Hardpoint', 'Hijack', 'Search & Destroy'],
   maps: { 'Hardpoint': [], 'Hijack': [], 'Search & Destroy': [] },
   mode_order: ['Hardpoint', 'Search & Destroy', 'Hijack', 'Hardpoint', 'Search & Destroy'],
-  // 40-PC lab: 8 rows of 5 in 4 sections → each section (2 rows, 10 PCs) runs one 4v4 match
-  stations: ['Section A', 'Section B', 'Section C', 'Section D'],
+  // Bracket stage: each match is set to one of these rows/pods (named in Setup)
+  stations: ['Row 1', 'Row 2', 'Row 3', 'Row 4'],
+  // Group stage: 40-PC lab = 8 rows of 5. Each team is pinned to one row for the whole group stage.
+  seating: { group_rows: 8, label: 'Row', pcs: 5 },
+  veto_method: 'online',  // default for new vetoes: 'online' (captain links) or 'in_person' (staff enters maps)
   groups: 'auto',        // 'auto' = 2–4 groups depending on entries, or a number
   advance: 'all',        // 'all' = every team goes to the bracket, or top N per group
   bracket: 'double',
@@ -20,18 +23,27 @@ export const DEFAULT_EVENT_SETTINGS = {
   seed_override: null,    // manual seed order chosen before generating playoffs
   display: {
     seconds: 20,
-    scenes: ['groups', 'kd:Hardpoint', 'kd:Hijack', 'kd:Search & Destroy', 'teams', 'bracket'],
+    scenes: ['live', 'groups', 'kd:Hardpoint', 'kd:Hijack', 'kd:Search & Destroy', 'teams', 'bracket'],
+    scenes_v: 2,
     min_games: 2,
-    ticker: true,
+    ticker: true,           // live / up next bar on every screen
+    leaders: true,          // scrolling category leaders in that bar
+    paused: false,          // remote: hold the current screen
+    cmd: null,              // remote: { next: timestamp } skips to the next screen
+    announce: null,         // remote: { text, at } banner on the screen
   },
 };
 
 export function eventSettings(ev) {
   const s = ev?.settings || {};
+  const display = { ...DEFAULT_EVENT_SETTINGS.display, ...(s.display || {}) };
+  // events made before the Live screen existed: add it once at the front
+  if (!s.display?.scenes_v && s.display?.scenes && !display.scenes.includes('live')) display.scenes = ['live', ...display.scenes];
   return {
     ...DEFAULT_EVENT_SETTINGS, ...s,
     maps: { ...DEFAULT_EVENT_SETTINGS.maps, ...(s.maps || {}) },
-    display: { ...DEFAULT_EVENT_SETTINGS.display, ...(s.display || {}) },
+    seating: { ...DEFAULT_EVENT_SETTINGS.seating, ...(s.seating || {}) },
+    display,
   };
 }
 
@@ -107,6 +119,8 @@ export const groupsFor = () => groupCount(ev.settings.groups, ev.data.teams.leng
 export const bracketMatches = () => (ev.projected ? ev.bracketPreview : ev.data.matches.filter(m => m.stage !== 'group'));
 export const teamName = id => (id === 'BYE' ? 'BYE' : ev.teamById.get(id)?.name || null);
 export const teamTag = id => ev.teamById.get(id)?.tag || ev.teamById.get(id)?.name?.slice(0, 4).toUpperCase() || '';
+/** Where a match is played (pinned rows in groups, row/pod in the bracket). */
+export const spotOf = m => matchSpot(m, ev.resolved.get(m.id), ev.teamById, ev.settings.seating.label || 'Row');
 export const eventPath = (sub = '') => `#/e/${ev.event.id}${sub ? '/' + sub : ''}`;
 
 /** Subscribe to live changes; calls onChange after data is reloaded. */

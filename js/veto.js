@@ -121,3 +121,49 @@ export function randomKey() {
   crypto.getRandomValues(a);
   return [...a].map(b => b.toString(36).padStart(2, '0')).join('').slice(0, 24);
 }
+
+// ---------- staff overrides (veto done in person / at the admin desk) ----------
+
+/** Staff makes the next choice for whichever team is up. Marks the action as staff-entered. */
+export function staffAct(veto, choice) {
+  const st = vetoNext(veto);
+  if (!st) throw new Error('The veto is already finished.');
+  const i = veto.actions.length;
+  const v = applyVeto(veto, st.team, choice);
+  v.actions[i] = { ...v.actions[i], staff: true };
+  return v;
+}
+
+/** Take back the last choice (and any decider that was filled in automatically after it). */
+export function undoVeto(veto) {
+  const actions = [...veto.actions];
+  while (actions.length && actions[actions.length - 1].kind === 'decider') actions.pop();
+  actions.pop();
+  return { ...veto, actions, status: actions.length ? 'active' : 'pending' };
+}
+
+/**
+ * A veto the teams did in person: staff types in each map (and optional starting side).
+ * entries: [{ slot, mode, map, sideTeam: 'a'|'b'|null, side: string|null }]
+ */
+export function manualVeto(base, entries, settings = {}) {
+  const steps = [], actions = [], at = new Date().toISOString();
+  const sorted = [...entries].filter(e => e.map).sort((x, y) => x.slot - y.slot);
+  for (const e of sorted) {
+    steps.push({ kind: 'pick', team: null, mode: e.mode, slot: e.slot });
+    actions.push({ i: actions.length, kind: 'pick', mode: e.mode, team: null, choice: e.map, slot: e.slot, at, staff: true });
+    if (e.side && e.sideTeam) {
+      steps.push({ kind: 'side', team: e.sideTeam, mode: e.mode, slot: e.slot, options: sideOptions(settings, e.mode) });
+      actions.push({ i: actions.length, kind: 'side', mode: e.mode, team: e.sideTeam, choice: e.side, slot: e.slot, at, staff: true });
+    }
+  }
+  const modes = [...new Set(sorted.map(e => e.mode))];
+  const pools = { ...(base.pools || {}) };
+  for (const m of modes) pools[m] = [...new Set([...(pools[m] || settings.maps?.[m] || []), ...sorted.filter(e => e.mode === m).map(e => e.map)])];
+  return { ...base, steps, actions, pools, status: 'done', source: 'in_person' };
+}
+
+/** Maps decided by a veto, ready to write into the match: [{ slot, mode, map }]. */
+export function vetoMaps(v) {
+  return v.actions.filter(a => a.kind === 'pick' || a.kind === 'decider').map(a => ({ slot: a.slot, mode: a.mode, map: a.choice }));
+}

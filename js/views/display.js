@@ -1,15 +1,15 @@
 // Venue TV / stream display. Full-screen scenes that rotate every N seconds and update live.
 // URL: #/display/<eventId>?t=20&scene=bracket&bg=transparent
 import { h, clear, fmtTime, fmtNum } from '../ui.js';
-import { ev, loadEvent, watchEvent, teamName, teamTag, bracketMatches, teamBadge } from '../event-state.js';
-import { roundName } from '../event-logic.js';
+import { ev, loadEvent, watchEvent, teamName, teamTag, bracketMatches, teamBadge, spotOf } from '../event-state.js';
+import { roundName, liveMap, gamesByMatch, seriesResult, categoryLeaders } from '../event-logic.js';
 import { allStandings, bracketView, leaderRows, teamRows, queueRows, awardsGrid } from './event-parts.js';
 import { applyAccent, applyFont } from '../theme.js';
 import { shortMode } from './event.js';
 import { vetoSeriesList, vetoBanner } from './veto.js';
 import { mapStates } from '../veto.js';
 
-const SCENE_TITLES = { groups: 'Group stage', teams: 'Team stats', bracket: 'Playoff bracket', 'bracket:upper': 'Upper bracket', 'bracket:lower': 'Lower bracket', queue: 'Live and up next', veto: 'Map veto', awards: 'Awards' };
+const SCENE_TITLES = { live: 'Live now', groups: 'Group stage', teams: 'Team stats', bracket: 'Playoff bracket', 'bracket:upper': 'Upper bracket', 'bracket:lower': 'Lower bracket', queue: 'Live and up next', veto: 'Map veto', awards: 'Awards' };
 
 export async function displayView(eventId, params) {
   document.body.classList.add('display-mode');
@@ -19,7 +19,10 @@ export async function displayView(eventId, params) {
   applyAccent(event.accent);
   applyFont(event.settings?.display?.font || 'mix');
 
-  const stage = h('div', { class: 'd-stage' });
+  const screen = h('div', { class: 'd-screen' });
+  const tickerSlot = h('div', { class: 'd-ticker-slot' });
+  const progress = h('div', { class: 'd-progress' });
+  const stage = h('div', { class: 'd-stage' }, screen, tickerSlot, progress);
   const viewport = h('div', { class: 'd-viewport' }, stage);
   let idx = 0, timer = null, started = Date.now();
 
@@ -47,14 +50,19 @@ export async function displayView(eventId, params) {
     if (idx >= list.length) idx = 0;
     const sc = list[idx];
     const title = sc.startsWith('kd:') ? `K/D leaders · ${sc.slice(3)}` : SCENE_TITLES[sc] || sc;
-    clear(stage).append(...[
+    const d = ev.settings.display;
+    const paused = d.paused && !params.get('scene');
+    const tk = d.ticker !== false || sc === 'live' ? ticker() : null;
+    clear(screen).append(...[
       h('header', { class: 'd-head' },
         h('div', { class: 'd-brand' }, h('span', { class: 'd-mark' }), ev.event.name),
         h('div', { class: 'd-title' }, title),
         h('div', { class: 'd-dots' }, list.map((_, i) => h('span', { class: i === idx ? 'on' : '' })))),
-      h('div', { class: `d-body ${animate ? 'enter' : ''}` }, h('div', { class: 'd-fit' }, scene(sc))),
-      ev.settings.display.ticker !== false ? ticker() : null,
-      h('div', { class: 'd-progress' }, h('div', { class: 'd-progress-fill', style: { animationDuration: `${seconds()}s`, animationDelay: `-${(Date.now() - started) / 1000}s` } }))].filter(Boolean));
+      d.announce?.text ? h('div', { class: 'd-announce' }, h('span', { class: 'd-announce-tag' }, 'Notice'), d.announce.text) : null,
+      h('div', { class: `d-body ${animate ? 'enter' : ''}` }, h('div', { class: 'd-fit' }, scene(sc)))].filter(Boolean));
+    // the ticker element is kept between renders so its scroll never restarts
+    if (tk) { if (tickerSlot.firstChild !== tk) clear(tickerSlot).append(tk); } else clear(tickerSlot);
+    clear(progress).append(...(paused || list.length < 2 ? [] : [h('div', { class: 'd-progress-fill', style: { animationDuration: `${seconds()}s`, animationDelay: `-${(Date.now() - started) / 1000}s` } })]));
     requestAnimationFrame(fitScene);
   }
 
@@ -73,7 +81,7 @@ export async function displayView(eventId, params) {
     started = Date.now();
     render(true);
     clearTimeout(timer);
-    timer = setTimeout(next, seconds() * 1000);
+    if (!(ev.settings.display.paused && !params.get('scene'))) timer = setTimeout(next, seconds() * 1000);
   }
 
   function scene(sc) {
@@ -82,6 +90,7 @@ export async function displayView(eventId, params) {
     if (sc.startsWith('bracket:')) return h('div', { class: 'd-bracket d-bracket-half' }, bracketView({ link: false, only: sc.slice(8) }));
     if (sc === 'teams') return teamsScene();
     if (sc === 'queue') return queueScene();
+    if (sc === 'live') return liveScene();
     if (sc === 'veto') return vetoScene();
     if (sc === 'awards') return awardsGrid({ large: true });
     if (sc.startsWith('kd:')) return kdScene(sc.slice(3));
@@ -150,26 +159,116 @@ export async function displayView(eventId, params) {
     return h('div', { class: 'd-queue' }, rows.map(m => {
       const r = ev.resolved.get(m.id);
       return h('div', { class: `d-q q-${m.status}` },
-        h('span', { class: 'd-q-station' }, m.station || '—'),
+        h('span', { class: 'd-q-station' }, spotOf(m)?.label || '—'),
         h('span', { class: 'd-q-teams' }, teamName(r.A), h('i', {}, 'vs'), teamName(r.B)),
         h('span', { class: 'd-q-round' }, roundName(m, bm)),
         h('span', { class: 'd-q-status' }, { live: 'Live', ondeck: 'On deck', scheduled: 'Up next' }[m.status] || ''));
     }));
   }
 
+  // ---------- Live scene: every live match with its running score, then who's up next ----------
+  function liveScene() {
+    const all = queueRows(16);
+    const live = all.filter(m => m.status === 'live');
+    const next = all.filter(m => m.status !== 'live').slice(0, live.length > 2 ? 3 : 5);
+    const gbm = gamesByMatch(ev.data.games);
+    const bm = ev.data.matches.filter(m => m.stage !== 'group');
+    if (!live.length && !next.length) return h('div', { class: 'd-empty' }, 'No matches right now');
+    const card = m => {
+      const r = ev.resolved.get(m.id);
+      const games = gbm.get(m.id) || [];
+      const res = seriesResult(m, games);
+      const lm = liveMap(m, games, ev.settings);
+      const lead = lm.a > lm.b ? 'a' : lm.b > lm.a ? 'b' : null;
+      const side = (key, id) => h('div', { class: `d-lv-team ${lead === key ? 'lead' : lead ? 'trail' : ''}` },
+        teamBadge(id, 'lg'),
+        h('span', { class: 'd-lv-name' }, teamName(id)),
+        h('span', { class: 'd-lv-maps', 'aria-label': 'Maps won' }, res[key]),
+        h('span', { class: 'd-lv-pts' }, lm.started ? lm[key] : '–'));
+      return h('div', { class: 'd-lv-card' },
+        h('div', { class: 'd-lv-meta' }, h('span', { class: 'd-lv-live' }, h('i'), 'Live'), h('span', {}, spotOf(m)?.label || ''), h('span', { class: 'muted' }, roundName(m, bm))),
+        side('a', r.A), side('b', r.B),
+        h('div', { class: 'd-lv-map' }, h('b', {}, `Map ${lm.game_no}`), [lm.mode, lm.map].filter(Boolean).join(' · ') || '', h('span', { class: 'muted' }, ` · Bo${m.best_of}`)));
+    };
+    return h('div', { class: `d-live n${Math.min(live.length, 4)}` },
+      live.length ? h('div', { class: 'd-lv-grid' }, live.slice(0, 4).map(card)) : null,
+      next.length ? h('div', { class: 'd-lv-next' },
+        h('div', { class: 'd-lv-next-title' }, live.length ? 'Up next' : 'Next matches'),
+        next.map(m => {
+          const r = ev.resolved.get(m.id);
+          return h('div', { class: `d-lv-row q-${m.status}` },
+            h('span', { class: 'd-lv-status' }, m.status === 'ondeck' ? 'On deck' : 'Up next'),
+            h('span', { class: 'd-lv-vs' }, teamBadge(r.A, 'md'), teamName(r.A), h('i', {}, 'vs'), teamBadge(r.B, 'md'), teamName(r.B)),
+            h('span', { class: 'd-lv-where' }, spotOf(m) ? `Report to ${spotOf(m).label}` : roundName(m, bm)));
+        })) : null);
+  }
+
+  // ---------- bottom bar: live scores, up next, then scrolling category leaders ----------
+  // Built once and updated in place so the scroll doesn't jump when a score changes.
+  let tickerEl = null, tickerKey = '';
   function ticker() {
-    const rows = queueRows(6);
+    const rows = queueRows(12);
+    const gbm = gamesByMatch(ev.data.games);
     const live = rows.filter(m => m.status === 'live');
     const upcoming = rows.filter(m => m.status !== 'live').slice(0, 3);
-    const item = m => { const r = ev.resolved.get(m.id); return h('span', { class: 'd-tk-item' }, h('b', {}, m.station || 'TBD'), `${teamTag(r.A) || teamName(r.A)} vs ${teamTag(r.B) || teamName(r.B)}`); };
-    return h('footer', { class: 'd-ticker' },
-      live.length ? h('div', { class: 'd-tk-group' }, h('span', { class: 'd-tk-label live' }, h('i'), 'Live'), live.map(item)) : null,
-      upcoming.length ? h('div', { class: 'd-tk-group' }, h('span', { class: 'd-tk-label' }, 'Up next'), upcoming.map(item)) : null,
-      !live.length && !upcoming.length ? h('div', { class: 'd-tk-group muted' }, 'Stay tuned') : null);
+    const items = [];
+    for (const m of live) {
+      const r = ev.resolved.get(m.id);
+      const games = gbm.get(m.id) || [];
+      const res = seriesResult(m, games);
+      const lm = liveMap(m, games, ev.settings);
+      items.push({ k: `L${m.id}`, cls: 'live', label: 'Live', text: `${teamTag(r.A)} ${res.a}–${res.b} ${teamTag(r.B)}`, sub: lm.started ? `Map ${lm.game_no} ${lm.a}–${lm.b}` : `Map ${lm.game_no}` });
+    }
+    for (const m of upcoming) {
+      const r = ev.resolved.get(m.id);
+      items.push({ k: `U${m.id}`, cls: 'next', label: m.status === 'ondeck' ? 'On deck' : 'Up next', text: `${teamTag(r.A)} vs ${teamTag(r.B)}`, sub: spotOf(m)?.label || '' });
+    }
+    if (ev.settings.display.leaders !== false) {
+      for (const l of categoryLeaders(ev.data, ev.settings, ev.idx, Math.max(1, ev.settings.display.min_games || 1))) {
+        items.push({ k: `C${l.cat}`, cls: 'leader', label: l.cat, text: l.name, team: l.team?.tag || '', sub: l.value });
+      }
+    }
+    if (!items.length) items.push({ k: 'idle', cls: 'next', label: ev.event.name, text: 'Stay tuned', sub: '' });
+    const key = items.map(i => i.k).join('|');
+    const scroll = items.length > 4;
+    const itemEl = i => h('span', { class: `d-tk-item ${i.cls}`, 'data-k': i.k },
+      h('span', { class: 'd-tk-label' }, i.cls === 'live' ? h('i') : null, i.label),
+      h('b', { class: 'd-tk-text' }, i.text), i.team ? h('span', { class: 'd-tk-team' }, i.team) : null,
+      i.sub ? h('span', { class: 'd-tk-sub' }, i.sub) : null);
+    if (!tickerEl || key !== tickerKey) {
+      tickerKey = key;
+      const track = h('div', { class: `d-tk-track ${scroll ? 'scroll' : ''}` }, items.map(itemEl), scroll ? items.map(itemEl) : null);
+      tickerEl = h('footer', { class: 'd-ticker' }, h('div', { class: 'd-tk-viewport' }, track));
+      if (scroll) requestAnimationFrame(() => {
+        // constant speed (~90px/s) whatever the content length
+        const half = track.scrollWidth / 2;
+        track.style.setProperty('--tk-dist', `-${half}px`);
+        track.style.animationDuration = `${Math.max(20, half / 90)}s`;
+      });
+    } else {
+      // same items: just refresh the text (scores) without restarting the scroll
+      for (const i of items) tickerEl.querySelectorAll(`[data-k="${CSS.escape(i.k)}"]`).forEach(el => {
+        el.querySelector('.d-tk-text').textContent = i.text;
+        const sub = el.querySelector('.d-tk-sub'); if (sub) sub.textContent = i.sub;
+      });
+    }
+    return tickerEl;
   }
 
   // Live data: re-render the current scene in place (timer keeps running)
-  watchEvent(() => { applyAccent(ev.event.accent); applyFont(ev.settings.display.font || 'mix'); render(false); });
+  let lastCmd = ev.settings.display.cmd?.next || 0;
+  let wasPaused = !!ev.settings.display.paused;
+  watchEvent(() => {
+    applyAccent(ev.event.accent); applyFont(ev.settings.display.font || 'mix');
+    const d = ev.settings.display;
+    if (d.cmd?.next && d.cmd.next > lastCmd) { lastCmd = d.cmd.next; next(); return; }      // "Next screen" from the control panel
+    if (wasPaused !== !!d.paused) {                                                          // pause / resume
+      wasPaused = !!d.paused;
+      clearTimeout(timer);
+      if (!wasPaused) { started = Date.now(); timer = setTimeout(next, seconds() * 1000); }
+    }
+    render(false);
+  });
   // Keep the screen awake on TVs/laptops where supported
   try { await navigator.wakeLock?.request('screen'); } catch { /* optional */ }
   // Click / arrow keys to advance manually (handy when testing)
@@ -177,7 +276,7 @@ export async function displayView(eventId, params) {
   addEventListener('keydown', e => { if (e.key === 'ArrowRight' || e.key === ' ') next(); });
 
   render(true);
-  timer = setTimeout(next, seconds() * 1000);
+  if (!ev.settings.display.paused) timer = setTimeout(next, seconds() * 1000);
   requestAnimationFrame(fit);
   return viewport;
 }

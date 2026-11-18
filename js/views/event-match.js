@@ -1,7 +1,7 @@
 // One event match: public scoreboard view + admin result entry (both teams, screenshots, OCR).
 import { h, clear, toast, modal, uid, fmtTime, parseTime, compressImage, confirmDialog } from '../ui.js';
 import { state } from '../state.js';
-import { ev, eventPath, refreshEvent, teamName, watchEvent, teamBadge } from '../event-state.js';
+import { ev, eventPath, refreshEvent, teamName, watchEvent, teamBadge, spotOf } from '../event-state.js';
 import { roundName, gamesByMatch, gameWinner, seriesResult } from '../event-logic.js';
 import { STAT_FIELDS, fieldsForMode, MAX_SCREENSHOT_PX, SCREENSHOT_QUALITY } from '../config.js';
 import { parseScoreboard, applyMapping } from '../ocr-parse.js';
@@ -17,6 +17,7 @@ export function eventMatch(matchId) {
   if (!m0) return eventShell('', h('div', { class: 'empty' }, 'Match not found.'));
   const root = h('div');
   let editing = false;
+  let vetoEl = null; // kept between live repaints so a half-typed in-person veto isn't lost
 
   const paint = () => {
     const m = ev.data.matches.find(x => x.id === matchId);
@@ -26,7 +27,7 @@ export function eventMatch(matchId) {
     const games = (gamesByMatch(ev.data.games).get(m.id) || []);
     const res = r.result || seriesResult(m, games);
     const head = h('div', { class: 'match-hero' },
-      h('div', { class: 'eyebrow' }, roundName(m, bm), ` · Best of ${m.best_of}`, m.station ? ` · ${m.station}` : ''),
+      h('div', { class: 'eyebrow' }, roundName(m, bm), ` · Best of ${m.best_of}`, spotOf(m) ? ` · ${spotOf(m).label}` : ''),
       h('div', { class: 'mh-row' },
         h('div', { class: `mh-team ${r.winner && r.winner === r.A ? 'win' : ''}` }, teamBadge(r.A, 'lg'), teamName(r.A) || 'TBD'),
         h('div', { class: 'mh-score' },
@@ -42,7 +43,11 @@ export function eventMatch(matchId) {
       ? editor(m, r, games)
       : h('div', { class: 'stack' }, games.length ? games.map(g => gameCard(g, r)) : h('div', { class: 'empty-sm' }, ready ? 'No maps played yet.' : 'Teams are decided by earlier results.'));
     const hasVeto = ev.data.vetoes.some(x => x.match_id === m.id);
-    const vetoPanel = ready && !editing && (ev.isAdmin || hasVeto) ? vetoAdminPanel(m, r) : null;
+    let vetoPanel = null;
+    if (ready && !editing && (ev.isAdmin || hasVeto)) {
+      if (!vetoEl) vetoEl = vetoAdminPanel(m, r); else vetoEl.refresh();
+      vetoPanel = vetoEl;
+    }
     clear(root).append(eventShell('', h('div', { class: 'stack' }, head, vetoPanel, body)));
   };
 

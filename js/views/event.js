@@ -6,18 +6,26 @@ import { allStandings, bracketView, queueList, leaderRows, modeColumns, teamRows
 import { sortTable } from './table.js';
 import { roundName, seriesResult, gamesByMatch } from '../event-logic.js';
 
+const ADMIN_TABS = [['control', 'Control panel'], ['seating', 'Rows & pods'], ['setup', 'Setup']];
+const PUBLIC_TABS = [['', 'Overview'], ['bracket', 'Bracket'], ['stats', 'Stats'], ['teams', 'Teams']];
+
+/** Page frame for every event page. Admins get a second, separate admin view
+ *  (control panel, rows & pods, setup); everyone else only sees the public pages. */
 export function eventShell(active, body) {
-  const tabs = [
-    ['', 'Overview'], ['bracket', 'Bracket'], ['stats', 'Stats'], ['teams', 'Teams'],
-    ...(ev.isAdmin ? [['control', 'Control room'], ['setup', 'Setup']] : []),
-  ];
+  const admin = ev.isAdmin && ADMIN_TABS.some(([k]) => k === active);
+  const tabs = admin ? ADMIN_TABS : PUBLIC_TABS;
   const e = ev.event;
-  return h('div', { class: 'page event-page' },
+  return h('div', { class: `page event-page ${admin ? 'is-admin' : ''}` },
+    admin ? h('div', { class: 'admin-strip' }, h('span', { class: 'admin-badge' }, 'Admin'), 'Only event admins and staff can see these pages. Changes go live on the display right away.') : null,
     h('div', { class: 'event-head' },
       h('div', {},
         h('div', { class: 'eyebrow' }, [e.starts_on && fmtDate(e.starts_on), e.venue].filter(Boolean).join(' · ') || 'LAN event'),
         h('h1', {}, e.name)),
-      h('a', { class: 'btn btn-ghost', href: `#/display/${e.id}`, target: '_blank', rel: 'noopener', 'data-tip': 'Open the rotating TV / stream screen in a new tab' }, 'Display ↗')),
+      h('div', { class: 'row' },
+        ev.isAdmin ? h('div', { class: 'seg', role: 'tablist', 'aria-label': 'View' },
+          h('a', { class: admin ? '' : 'on', href: eventPath('') }, 'Public view'),
+          h('a', { class: admin ? 'on' : '', href: eventPath('control') }, 'Admin')) : null,
+        h('a', { class: 'btn btn-ghost', href: `#/display/${e.id}`, target: '_blank', rel: 'noopener', 'data-tip': 'Open the rotating TV / stream screen in a new tab' }, 'Display ↗'))),
     h('nav', { class: 'tabs' }, tabs.map(([sub, label]) => h('a', { href: eventPath(sub), class: active === sub ? 'active' : '' }, label))),
     body);
 }

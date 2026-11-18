@@ -2,7 +2,7 @@
 // so the event pages and the display screen can be explored before the real thing.
 import { uid } from './ui.js';
 import { DEFAULT_EVENT_SETTINGS, eventSettings } from './event-state.js';
-import { snakeGroups, roundRobin, buildBracket, resolveMatches, groupStandings, playoffSeeds, groupCount, advanceCount, GROUP_LABELS } from './event-logic.js';
+import { snakeGroups, roundRobin, buildBracket, resolveMatches, groupStandings, playoffSeeds, groupCount, advanceCount, GROUP_LABELS, autoRows, gameWinner } from './event-logic.js';
 
 const TEAMS = [
   ['Night Owls', 'NOWL'], ['Vanta', 'VNTA'], ['Static Pulse', 'SPLS'], ['Red Line', 'RDLN'],
@@ -28,6 +28,8 @@ export async function loadSampleEvent(store, teamCount = 12, name = 'Sample LAN'
   const nGroups = groupCount(settings.groups, teams.length);
   const groups = snakeGroups(teams, nGroups);
   teams.forEach(t => { t.group_label = groups[t.id]; });
+  const rows = autoRows(teams, settings.seating.group_rows);
+  teams.forEach(t => { t.row_no = rows[t.id]; });
   await store.evUpsert('event_teams', teams);
   const players = teams.flatMap((t, i) => NAMES.slice(i * 4, i * 4 + 4).map(g => ({ id: uid(), event_id: e, team_id: t.id, gamertag: g })));
   await store.evUpsert('event_players', players);
@@ -91,7 +93,15 @@ export async function loadSampleEvent(store, teamCount = 12, name = 'Sample LAN'
   }
   // one series live on stage, one on deck
   const open = bracket.filter(m => { const r = res.get(m.id); return r.A && r.B && r.A !== 'BYE' && r.B !== 'BYE' && !r.result?.done; });
-  open.slice(0, 3).forEach((m, i) => { m.status = 'live'; m.station = settings.stations[i]; playSeries(m, res.get(m.id).A, res.get(m.id).B, Math.min(i + 1, 2)); });
+  open.slice(0, 3).forEach((m, i) => {
+    m.status = 'live'; m.station = settings.stations[i];
+    playSeries(m, res.get(m.id).A, res.get(m.id).B, Math.min(i + 1, 2));
+    // the map being played right now, with a running score
+    const no = games.filter(g => g.match_id === m.id && gameWinner(g)).length + 1;
+    const mode = settings.mode_order[(no - 1) % settings.mode_order.length];
+    const map = MAPS[mode][rnd(0, MAPS[mode].length - 1)];
+    m.live = mode === 'Hardpoint' ? { game_no: no, mode, map, a: rnd(90, 180), b: rnd(80, 170) } : mode === 'Search & Destroy' ? { game_no: no, mode, map, a: rnd(1, 4), b: rnd(1, 4) } : { game_no: no, mode, map, a: rnd(0, 2), b: rnd(0, 2) };
+  });
   if (open[3]) { open[3].status = 'ondeck'; open[3].station = settings.stations[3]; }
 
   await store.evUpsert('event_matches', all);

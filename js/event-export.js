@@ -1,7 +1,7 @@
 // Export every LAN stat as CSV files (and one ZIP with all of them + a JSON backup).
 // Pure data builders (Node-testable) + a tiny uncompressed ZIP writer.
 import { toCSV } from './stats.js';
-import { playerBoard, teamBoard, roundName, gamesByMatch, gameWinner, seriesResult, indexEvent } from './event-logic.js';
+import { playerBoard, teamBoard, roundName, gamesByMatch, gameWinner, seriesResult, indexEvent, matchSpot } from './event-logic.js';
 
 const mmss = s => (s == null || s === '' ? '' : `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, '0')}`);
 const r2 = v => (v == null || !isFinite(v) ? '' : Math.round(v * 100) / 100);
@@ -11,6 +11,7 @@ export function eventCsvs(eventRow, data, resolved, standings, settings) {
   const { admin_code, ...event } = eventRow; // never export the admin code
   const idx = indexEvent(data);
   const team = id => data.teams.find(t => t.id === id);
+  const teamById = new Map(data.teams.map(t => [t.id, t]));
   const tname = id => (id === 'BYE' ? 'BYE' : team(id)?.name || '');
   const bm = data.matches.filter(m => m.stage !== 'group');
   const rname = m => roundName(m, bm);
@@ -52,11 +53,11 @@ export function eventCsvs(eventRow, data, resolved, standings, settings) {
   // 3. teams
   const tb = teamBoard(data, resolved, idx);
   files['teams.csv'] = toCSV(tb.map(r => ({
-    team: r.team.name, tag: r.team.tag || '', group: r.team.group_label || '', seed: r.team.seed ?? '',
+    team: r.team.name, tag: r.team.tag || '', group: r.team.group_label || '', seed: r.team.seed ?? '', group_row: r.team.row_no ?? '',
     series_w: r.sw, series_l: r.sl, maps_w: r.mw, maps_l: r.ml, map_diff: r.md, kills: r.kills, deaths: r.deaths, kd: r2(r.kd),
     ...Object.fromEntries(settings.modes.map(m => [`${m} W-L`, r.modes[m] ? `${r.modes[m].w}-${r.modes[m].l}` : ''])),
     roster: data.players.filter(p => p.team_id === r.team.id).map(p => p.gamertag).join(' / '),
-  })), cols(['team', 'tag', 'group', 'seed', 'series_w', 'series_l', 'maps_w', 'maps_l', 'map_diff', 'kills', 'deaths', 'kd', ...settings.modes.map(m => `${m} W-L`), 'roster']));
+  })), cols(['team', 'tag', 'group', 'seed', 'group_row', 'series_w', 'series_l', 'maps_w', 'maps_l', 'map_diff', 'kills', 'deaths', 'kd', ...settings.modes.map(m => `${m} W-L`), 'roster']));
 
   // 4. group standings
   const st = [];
@@ -68,7 +69,7 @@ export function eventCsvs(eventRow, data, resolved, standings, settings) {
     const r = resolved.get(m.id) || {};
     const res = r.result || seriesResult(m, gbm.get(m.id) || []);
     return { stage: m.stage, group: m.group_label || '', round: rname(m), code: m.code || '', team_a: tname(r.A), team_b: tname(r.B), maps_a: res.a, maps_b: res.b,
-      winner: tname(r.winner), best_of: m.best_of, status: m.status, pod: m.station || '' };
+      winner: tname(r.winner), best_of: m.best_of, status: m.status, pod: matchSpot(m, r, teamById, settings.seating?.label || 'Row')?.label || '' };
   }).sort((a, b) => (a.stage === 'group' ? 0 : 1) - (b.stage === 'group' ? 0 : 1)), cols(['stage', 'group', 'round', 'code', 'team_a', 'team_b', 'maps_a', 'maps_b', 'winner', 'best_of', 'status', 'pod']));
 
   // 6. maps (every game)

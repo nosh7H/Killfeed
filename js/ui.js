@@ -5,14 +5,24 @@ export function h(tag, attrs = {}, ...children) {
   for (const [k, v] of Object.entries(attrs || {})) {
     if (v == null || v === false) continue;
     if (k === 'class') el.className = v;
-    else if (k === 'style' && typeof v === 'object') Object.assign(el.style, v);
+    else if (k === 'style' && typeof v === 'object') for (const [sk, sv] of Object.entries(v)) { if (sk.startsWith('--')) el.style.setProperty(sk, sv); else el.style[sk] = sv; }
     else if (k.startsWith('on') && typeof v === 'function') el.addEventListener(k.slice(2).toLowerCase(), v);
     else if (k === 'html') el.innerHTML = v; // only used with trusted static strings
     else if (k in el && typeof v !== 'string') el[k] = v;
     else el.setAttribute(k, v === true ? '' : v);
   }
   append(el, children);
+  if (el.tagName === 'BUTTON') markSubmit(el);
   return el;
+}
+
+// Buttons that submit something (Save, Create, Log result, End map…) turn green on hover.
+// Detected from the label so every form gets it; add data-submit to opt in, data-nosubmit to opt out.
+const SUBMIT_RE = /^(save|submit|create|log|confirm|generate|rebuild|update|apply|fill|mark final|end map|start match|send|schedule|import|upload|join|sign in|sign up|add teams|add time off|show on screen|ban |pick |set |enter maps|run the veto|use this)/i;
+function markSubmit(el) {
+  if (el.hasAttribute('data-nosubmit') || !/\bbtn\b/.test(el.className) || /btn-ghost|btn-danger\b/.test(el.className)) return;
+  const label = el.textContent.trim();
+  if (el.getAttribute('type') === 'submit' || el.hasAttribute('data-submit') || SUBMIT_RE.test(label)) el.classList.add('btn-submit');
 }
 
 function append(el, children) {

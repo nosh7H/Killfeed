@@ -1,5 +1,6 @@
 import { h, toast } from '../ui.js';
 import { state, refreshTeams, go } from '../state.js';
+import { inDemoSession } from '../store/index.js';
 
 export async function teamsView() {
   await refreshTeams();
@@ -33,20 +34,20 @@ export async function teamsView() {
         const t = await state.store.joinTeam(code.value, display2.value.trim());
         await refreshTeams();
         toast(`Joined ${t.name}`, 'success');
-        go(`#/t/${t.id}/dashboard`);
+        go(`#/t/${t.id}/home`);
       } catch (err) { toast(err.message, 'error'); }
     },
   }, h('h3', {}, 'Join with invite code'),
   h('label', {}, 'Invite code', code),
   h('label', {}, 'Your name on this team', display2),
   h('button', { class: 'btn', type: 'submit', disabled: local }, 'Join team'),
-  local ? h('p', { class: 'muted small' }, 'Joining other teams needs cloud mode (see README).') : null);
+  local ? h('p', { class: 'muted small' }, inDemoSession() ? 'Sign up to join a real team.' : 'Joining other teams needs cloud mode (see README).') : null);
 
   return h('div', { class: 'page' },
     h('div', { class: 'page-head' }, h('h1', {}, 'Your teams')),
     state.teams.length
-      ? h('div', { class: 'team-grid' }, state.teams.map(t => h('a', { class: 'card team-card', href: `#/t/${t.id}/dashboard` },
-        h('div', { class: 'team-tag' }, t.tag || t.name.slice(0, 3).toUpperCase()),
+      ? h('div', { class: 'team-grid' }, state.teams.map(t => h('a', { class: 'card team-card', href: `#/t/${t.id}/home` },
+        h('div', { class: 'team-tag', style: t.accent ? { color: t.accent, borderColor: t.accent } : null }, t.tag || t.name.slice(0, 3).toUpperCase()),
         h('div', {}, h('strong', {}, t.name), h('div', { class: 'muted small' }, roleLabel(t.role))))))
       : h('p', { class: 'muted' }, 'You are not on a team yet. Create one or join with a code from your team owner.'),
     h('div', { class: 'grid-2 gap-lg' }, create, join),
@@ -57,7 +58,7 @@ export async function teamsView() {
           e.target.disabled = true;
           const { loadSample } = await import('../sample.js');
           const t = await loadSample(state.store);
-          await refreshTeams(); go(`#/t/${t.id}/dashboard`);
+          await refreshTeams(); go(`#/t/${t.id}/home`);
         },
       }, 'Load sample team')) : null);
 }

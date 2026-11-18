@@ -374,3 +374,102 @@ export function computeAwards(data, idx = indexEvent(data), minMaps = 4) {
   push('steady', 'Mr. Consistent', `Steadiest K/D map to map (K/D ≥ 1, ${minMaps}+ maps)`, steady?.r, steady?.sd, steady && `±${steady.sd.toFixed(2)}`);
   return out;
 }
+
+// ---------- seating (rows / pods) ----------
+//
+// Group stage: every team is pinned to one row (team.row_no) for the whole group stage,
+// so a group match is played from the two teams' own rows.
+// Bracket stage: each match is set to one of the bracket rows (match.station).
+
+/** Pin teams to rows 1..rowCount: groups stay together, seed order inside each group.
+ *  More teams than rows → rows are shared (those teams can't play at the same time). */
+export function autoRows(teams, rowCount) {
+  const n = Math.max(1, rowCount | 0);
+  const sorted = [...teams].sort((a, b) => (a.group_label || '~').localeCompare(b.group_label || '~') || (a.seed ?? 999) - (b.seed ?? 999) || a.name.localeCompare(b.name));
+  return Object.fromEntries(sorted.map((t, i) => [t.id, (i % n) + 1]));
+}
+
+/** Where a match is played. Returns { label, rows?: [a, b], pod?: string } or null. */
+export function matchSpot(m, r, teamById, label = 'Row') {
+  if (m.stage === 'group') {
+    const ra = teamById.get(r?.A)?.row_no ?? null, rb = teamById.get(r?.B)?.row_no ?? null;
+    if (ra != null || rb != null) return { rows: [ra, rb], label: `${label}s ${ra ?? '?'} & ${rb ?? '?'}`, short: `${ra ?? '?'}/${rb ?? '?'}` };
+    return m.station ? { pod: m.station, label: m.station, short: m.station } : null;
+  }
+  return m.station ? { pod: m.station, label: m.station, short: m.station } : null;
+}
+
+/** Seating clashes between matches that are live or on deck:
+ *  the same row or pod used twice, or a team booked in two matches. */
+export function seatConflicts(matches, resolved, teamById, label = 'Row') {
+  const busy = matches.filter(m => m.status === 'live' || m.status === 'ondeck');
+  const uses = new Map();
+  const add = (key, m) => { if (!uses.has(key)) uses.set(key, new Set()); uses.get(key).add(m.id); };
+  for (const m of busy) {
+    const r = resolved.get(m.id);
+    const spot = matchSpot(m, r, teamById, label);
+    if (spot?.rows) spot.rows.filter(x => x != null).forEach(x => add(`${label} ${x}`, m));
+    else if (spot?.pod) add(spot.pod, m);
+    for (const t of [r?.A, r?.B]) if (t && t !== 'BYE') add(`team:${t}`, m);
+  }
+  const out = [];
+  for (const [key, ids] of uses) {
+    if (ids.size < 2) continue;
+    const live = [...ids].filter(id => busy.find(m => m.id === id).status === 'live');
+    // two on-deck matches sharing a row is fine (one plays after the other); clash only if 2+ are live
+    if (live.length < 2) continue;
+    out.push({ key, team: key.startsWith('team:') ? key.slice(5) : null, matches: [...ids] });
+  }
+  return out;
+}
+
+/** First bracket pod not used by another live match. */
+export function freeStation(stations, matches, exceptId = null) {
+  const used = new Set(matches.filter(m => m.status === 'live' && m.id !== exceptId && m.station).map(m => m.station));
+  return stations.find(s => !used.has(s)) || null;
+}
+
+// ---------- live map score ----------
+
+/** The map being played right now: { game_no, mode, map, a, b, started }.
+ *  match.live holds the running score; mode/map come from the vetoed games or the mode order. */
+export function liveMap(m, games = [], settings = {}) {
+  const decided = games.filter(g => gameWinner(g)).length;
+  const no = m.live?.game_no || decided + 1;
+  const g = games.find(x => x.game_no === no);
+  const order = settings.mode_order || [];
+  return {
+    game_no: no,
+    mode: m.live?.mode || g?.mode || order[(no - 1) % (order.length || 1)] || null,
+    map: m.live?.map || g?.map || null,
+    a: Number(m.live?.a) || 0, b: Number(m.live?.b) || 0,
+    started: !!m.live,
+  };
+}
+
+// ---------- category leaders (display ticker) ----------
+
+/** One leader per category, e.g. [{ cat: 'HP K/D', name, team, value }]. */
+export function categoryLeaders(data, settings, idx = indexEvent(data), minGames = 1) {
+  const out = [];
+  const pick = (rows, val, fmt, cat) => {
+    const best = rows.filter(r => r.games >= minGames && (val(r) ?? 0) > 0).sort((a, b) => val(b) - val(a) || b.kills - a.kills)[0];
+    if (best) out.push({ cat, name: best.name, team: best.team, value: fmt(val(best)), key: best.key });
+  };
+  const short = m => ({ 'Hardpoint': 'HP', 'Search & Destroy': 'SnD', 'Hijack': 'Hijack', 'Control': 'Control' }[m] || m);
+  const t = s => `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, '0')}`;
+  const all = playerBoard(data, {}, idx);
+  pick(all, r => r.kd, v => v.toFixed(2), 'Overall K/D');
+  for (const mode of settings.modes || []) {
+    const rows = playerBoard(data, { mode }, idx);
+    pick(rows, r => r.kd, v => v.toFixed(2), `${short(mode)} K/D`);
+    if (mode === 'Hardpoint') pick(rows, r => r.objpg, t, 'HP obj time / map');
+    if (mode === 'Search & Destroy') {
+      pick(rows, r => r.first_bloods, v => String(v), 'SnD first bloods');
+      pick(rows, r => r.plants + r.defuses, v => String(v), 'SnD plants + defuses');
+    }
+  }
+  pick(all, r => r.kills, v => String(v), 'Most kills');
+  pick(all.filter(r => r.dmgpg), r => r.dmgpg, v => Math.round(v).toLocaleString(), 'Damage / map');
+  return out;
+}

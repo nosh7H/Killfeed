@@ -1,6 +1,6 @@
 // Reusable event widgets — used by the event pages and (in large format) by the display screen.
 import { h, fmtTime, fmtNum } from '../ui.js';
-import { ev, bracketMatches, teamName, teamTag, eventPath, teamBadge } from '../event-state.js';
+import { ev, bracketMatches, teamName, teamTag, eventPath, teamBadge, spotOf } from '../event-state.js';
 import { roundName, playerBoard, teamBoard, queue, computeAwards } from '../event-logic.js';
 
 const STATUS_LABEL = { scheduled: 'Scheduled', ondeck: 'On deck', live: 'Live', final: 'Final' };
@@ -56,7 +56,7 @@ function matchBox(m, { link = true } = {}) {
     class: `bm ${live ? 'live' : ''} ${r.winner && r.winner !== 'BYE' ? 'done' : ''}`,
     href: link && !ev.projected ? eventPath(`match/${m.id}`) : null,
   },
-  h('div', { class: 'bm-meta' }, h('span', {}, m.code), live ? statusPill('live') : m.station && m.status !== 'final' ? h('span', {}, m.station) : null),
+  h('div', { class: 'bm-meta' }, h('span', {}, m.code), live ? statusPill('live') : spotOf(m) && m.status !== 'final' ? h('span', {}, spotOf(m).label) : null),
   side(r.A, r.result?.a, r.winner && r.winner === r.A, 'a'),
   side(r.B, r.result?.b, r.winner && r.winner === r.B, 'b'));
   return box;
@@ -97,7 +97,7 @@ export function queueList({ limit = 8, link = true } = {}) {
   return h('div', { class: 'queue' }, rows.map(m => {
     const r = ev.resolved.get(m.id);
     return h(link ? 'a' : 'div', { class: `queue-row q-${m.status}`, href: link ? eventPath(`match/${m.id}`) : null },
-      h('span', { class: 'q-station' }, m.station || '—'),
+      h('span', { class: 'q-station' }, spotOf(m)?.label || '—'),
       h('span', { class: 'q-teams' }, teamBadge(r.A, 'xs'), teamName(r.A), h('span', { class: 'vs' }, 'vs'), teamBadge(r.B, 'xs'), teamName(r.B)),
       h('span', { class: 'q-round' }, roundName(m, ev.data.matches.filter(x => x.stage !== 'group'))),
       statusPill(m.status));
