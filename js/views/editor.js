@@ -3,7 +3,7 @@ import { state, teamPath, go, canEdit, isOwner, refreshData, knownMaps, knownMod
 import { MATCH_TYPES, STAT_FIELDS, fieldsForMode, MAX_SCREENSHOT_PX, SCREENSHOT_QUALITY } from '../config.js';
 import { parseScoreboard, applyMapping } from '../ocr-parse.js';
 
-const CDL_BO5 = ['Hardpoint', 'Search & Destroy', 'Hijack', 'Hardpoint', 'Search & Destroy'];
+const CDL_BO5 = ['Hardpoint', 'Search & Destroy', 'Control', 'Hardpoint', 'Search & Destroy'];
 const STAT_KEYS = STAT_FIELDS.map(f => f.key);
 
 export async function editorView(matchId) {
@@ -12,10 +12,8 @@ export async function editorView(matchId) {
   if (matchId && !existing) return h('div', { class: 'empty' }, h('p', {}, 'Match not found.'));
 
   const roster = state.data.players.filter(p => p.active !== false);
-  const prefill = !existing ? JSON.parse(sessionStorage.getItem('kf-prefill') || 'null') : null;
-  sessionStorage.removeItem('kf-prefill');
   const match = existing ? { ...existing } : {
-    type: prefill?.type || 'scrim', played_on: prefill?.played_on || new Date().toLocaleDateString('en-CA'), opponent: prefill?.opponent || '', event: '', notes: '',
+    type: 'scrim', played_on: new Date().toLocaleDateString('en-CA'), opponent: '', event: '', notes: '',
   };
 
   const blankStats = () => (roster.length ? roster : [{}, {}, {}, {}]).map(p => ({ player_name: p.gamertag || '', kills: null, deaths: null }));
@@ -67,7 +65,7 @@ export async function editorView(matchId) {
       h('div', { class: 'add-row' },
         h('button', { class: 'btn', onclick: () => { games.push(newGame()); activeGame = games.length - 1; render(); } }, '＋ Add map'),
         !existing && games.length === 1 && !games[0].map ? h('button', {
-          class: 'btn btn-ghost', 'data-tip': 'Hardpoint, S&D, Hijack, Hardpoint, S&D',
+          class: 'btn btn-ghost', 'data-tip': 'Hardpoint, S&D, Control, Hardpoint, S&D',
           onclick: () => { games = CDL_BO5.map(m => newGame(m)); render(); },
         }, 'Use Bo5 template') : null),
       h('div', { class: 'save-bar' }, h('button', { class: 'btn btn-primary btn-lg', onclick: save }, 'Save match')));
@@ -277,15 +275,6 @@ export async function editorView(matchId) {
         const merged = [...new Set([...(state.team.maps || []), ...newMaps])];
         await state.store.updateTeam(state.team.id, { maps: merged });
         state.team.maps = merged;
-      }
-
-      // link back to the schedule entry this result came from
-      if (prefill?.sched_id) {
-        try {
-          const { events } = await state.store.listSchedule(state.team.id);
-          const se = events.find(e => e.id === prefill.sched_id);
-          if (se) await state.store.saveScheduleEvent(state.team.id, { ...se, match_id: id, status: 'done' });
-        } catch { /* schedule link is optional */ }
       }
 
       await refreshData();

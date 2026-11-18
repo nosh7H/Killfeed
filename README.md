@@ -13,77 +13,6 @@ A static website for Call of Duty teams to log scrims and matches, upload scoreb
 - **VOD review.** Embed a YouTube or Twitch VOD per map, or open a local recording. Add timestamped notes with tags. Click a note to jump to that moment.
 - **Data.** Export CSV (all games or the filtered view), back up and restore with JSON.
 - **Demo mode.** It works with no backend; data stays in the browser. A **Load sample team** button fills it with example data.
-- **Try the demo.** Once Supabase is connected, the sign-in page has a **Try the demo** button. Visitors can explore a sample team in their own browser without an account. To hide it, add `export const SHOW_DEMO = false;` to `js/config.js`.
-
-## Team insights and notes
-
-- **Insights** (team nav):
-  - **Pick/ban assistant.** Each map's win rate per mode with an 80% range. Small samples are pulled toward 50%, so a 2–0 map doesn't outrank a proven 14–3 one. Each map gets a label (Strong / Leaning / Even / Weak / Low sample), and each mode gets a suggested pick and ban. Maps in your pool that you've never played are listed separately.
-  - **What wins us maps.** For each mode, the team stats that differ most between won and lost maps (team K/D, deaths, lowest player K/D, hill time, first bloods, plants + defuses, damage per kill…). Each one shows its effect size and a rule of thumb, e.g. "Team K/D ≥ 1.06: won 11 of 11". It flags an early read under 8 maps.
-  - **Player impact.** The team's win rate when each player goes positive vs negative.
-  - Filters: match type and a start date.
-- **Notes** (team nav): a shared notepad tagged by map, mode and opponent, with pinning, search, autosave and a "Map plan" template. Maps with notes link to them from the pick/ban assistant.
-
-## Map breakdown tagging (VOD)
-
-Open any map → **Map breakdown**. Pick the source:
-- **Player POV**: tag as you watch. Deathcams hide the score, so you tag events (kills, deaths, plants), not the scoreboard.
-- **CODCaster**: always-on scores, no deathcam. Same hotkeys, more reliable.
-
-Each tag stamps the current VOD time. Hotkeys can be switched off.
-- Hardpoint: `N` new hill, `1` we got first, `2` they got first, `B` we broke, `U` lost (they broke us), `Z` undo.
-- S&D: set "We start on" Attack/Defense, then `R` new round, `K` our kill, `D` our death, `P` plant, `E` defuse, `W`/`L` round won/lost, `U`/`Z` undo.
-- `←` / `→` seek the video by 5 seconds.
-
-Tags autosave, and the stats update on their own in **Insights**:
-- Hill by hill: hold rate, break rate, and the results for each hill.
-- S&D rounds: first-blood rate and conversion, post-plant win %, retakes, 3v2 / 2v3 and the full 4×4 man-advantage matrix, and Attack vs Defense.
-- A breakdown log.
-- These features also feed **What wins us maps**.
-
-Hijack only has free event tags for now.
-
-## Schedule and time off
-
-**Schedule** (team nav):
-- Views: week, month and list.
-- Rescheduling: drag a match to a new slot (15-minute snap) and use the **Undo** toast to reverse it. Each move is kept in the event's history.
-- Colors: each league has its own color, and scrims (teal) and practice (grey) have separate colors. The owner sets these in **Leagues and colors**.
-- **Time off:** each player blocks times they can't play, either once or as a weekly repeat with an end date. The calendar shades these times, and an event shows "N out" if it clashes with someone's time off.
-- **Find a time:** pick a length and a range of days to get a ranked list of slots where everyone (or most people) is free. Schedule straight from a slot.
-- **Log result:** turns a finished event into a new match with the opponent and date filled in, then links the two.
-
-Times are stored in UTC and shown in each person's local time.
-
-## LAN events
-
-**Events** (top nav) is a separate section for running a LAN.
-
-- **Setup** — paste teams (`Name | TAG | gamer1, gamer2, gamer3, gamer4`, one per line). Groups are automatic (2 groups up to 8 teams, 3 up to 12, 4 up to 16) or a number you choose. Choose who reaches playoffs (default: **all teams**), single or double elimination, and series length per stage (default: **Bo3 groups, Bo5 playoffs**). Set the mode order (default **HP → S&D → Hijack → HP → S&D**), the map pool per mode, and **pods**: how many there are and their names. The default is 4 sections for a 40-PC lab, with one 4v4 match per section.
-- **Stages** — auto-assign groups (snake by seed), generate the round-robin group matches, then generate playoffs. Seeds come from the group results: group winners first, then runners-up. You can reorder seeds by hand before locking them in. Until playoffs are generated, the bracket shows a live projection.
-- **Control room** (staff) — every pod at a glance, plus the match queue. Set each match's pod and status (Scheduled → On deck → Live → Final), reorder who gets called next, and pin a screen on the display.
-- **Scores** — when a team reports, open the match and type the map scores. Stats and screenshots are optional and can be added later. Screenshot reading works for both teams at once. A series is marked final automatically when someone wins, and the bracket moves the winner on.
-- **Public pages** — overview, bracket, stats (K/D per mode, obj time, plants, defuses, first bloods) and team pages. Anyone with the link can see them; no login needed.
-- **Team logos and colors**: upload a logo (it's fitted to a square PNG) and pick a color for each team in Setup → Teams. They appear in standings, the bracket, the queue, match pages and on the TV.
-- **Awards**: Event MVP, Slayer, Obj King, Bomb Specialist, First Blood, Damage Dealer and Mr. Consistent, calculated automatically. They appear on the Overview, and as an optional TV screen (Setup → Display → Awards).
-- **Export**: Setup → Data → **Download all stats (.zip)**, or **Export stats** on the public Stats page. The ZIP contains `player_maps.csv` (one row per player per map: ideal for pivots, Sheets or pandas), `player_totals.csv`, `teams.csv`, `group_standings.csv`, `matches.csv`, `maps.csv`, `vetoes.csv` and a JSON backup.
-- **Display** (`#/display/<event-id>`) — full-screen scenes for the venue TV and OBS: Groups → K/D Hardpoint → K/D Hijack → K/D S&D → Team stats → Bracket. Brackets with more than 8 teams get a separate upper and lower screen. Each screen shows for 15–30 s (set in Setup), and a Live / Up next bar runs along the bottom. **It updates by itself** when scores are entered on any other laptop. No refresh needed.
-  - OBS: add a Browser Source at 1920×1080 with the display link. Add `?bg=transparent` for a transparent background.
-  - Link options: `?t=20` sets seconds per screen, `?scene=bracket` shows only that screen.
-  - Arrow keys or a click advance to the next screen (handy for testing).
-
-### Map veto (pick/ban)
-
-1. Open a match (Control room → **Scores**) and click **Create veto links**. The higher seed is Team A by default, and you can change it.
-2. Send each captain **their own link**. Captains open it on their phone with no account needed. Their buttons only work on their turn, and every ban or pick needs a confirm tap. Share the **spectator link** with anyone else.
-3. The order follows the event's mode order (default HP → S&D → Hijack → HP → S&D) and each mode's map pool:
-   - **Modes played twice (HP, S&D):** each team bans one map. Then the team that started that mode picks the first map and the other team picks its side. The other team picks the second map and the first team picks the side. If only one map is left, it's taken automatically.
-   - **Modes played once (Hijack in a Bo5, every mode in a Bo3):** teams alternate bans until one map is left. That's the decider. The team that didn't make the last ban picks the side.
-   - Team A starts Hardpoint, Team B starts S&D, Team A starts the third mode.
-4. When the veto ends, **the maps and modes fill into the match automatically**. Staff only enter scores.
-5. **Show on display**, or **Pin: Map veto** in the Control room, puts the live veto on the venue TV and stream.
-
-Side names default to Attack / Defense for S&D and Side A / Side B for other modes. Security: captain keys are checked by the database itself (`veto_act`). Nobody can act for the other team, act out of turn, or reuse a banned map, even by calling the API directly.
 
 ## 1. Put it on GitHub Pages (5 min)
 
@@ -120,28 +49,11 @@ team ─┬─ members (role)
                   └─ vod_marks (timestamped notes)
 ```
 
-## Updating an existing Supabase project
-
-**After this update, run the whole `supabase/schema.sql` again** (SQL Editor → paste → Run). It's safe to re-run: it only adds what's missing. It creates the event tables, makes public events readable without a login, and turns on live updates for the display. The latest version also adds `game_breakdowns`, `schedule_events`, `player_timeoff` and `teams.schedule_cfg`, all with row-level security.
-
-### Older note
-
-If you ran `schema.sql` before team colors were added, run this once in the SQL Editor:
-
-```sql
-alter table public.teams add column if not exists accent text check (accent ~ '^#[0-9a-fA-F]{6}$');
-```
-
-(Re-running the whole `schema.sql` also works and is safe.)
-
 ## Customizing
 
 - **Map pool and modes**: set per team in **Team settings**. New maps you type while logging get added automatically.
 - **Stat columns**: edit `STAT_FIELDS` in `js/config.js`. To add a stat, also add a column to the `stats` table in `supabase/schema.sql` (`alter table stats add column ...`).
-- **Team color**: owners pick one under **Team settings** (presets or any custom color). Buttons and highlights switch to it when you're in that team. Charts keep fixed colors so they read the same for everyone.
-- **Fonts**: four styles: **Mix** (default: Chakra Petch headings, IBM Plex Sans text, JetBrains Mono numbers, Big Shoulders Display on the TV), **Tactical HUD**, **Analyst** and **Stadium**. Events choose one for the website and one for the TV screen (Setup → Event / Display screen). The team section saves its choice per device (Team → Font style).
-- **Colors**: the default accent is light purple. Winning scores are white and losing scores grey, and the top value in each stat column gets a gold ★.
-- **Site name**: `SITE_NAME` in `js/config.js`. Default colors are at the top of `css/styles.css`.
+- **Site name**: `SITE_NAME` in `js/config.js`. Colors are at the top of `css/styles.css`.
 
 ## OCR tips
 

@@ -1,9 +1,6 @@
 import { h, toast } from '../ui.js';
 import { state } from '../state.js';
-import * as config from '../config.js';
-const { SITE_NAME } = config;
-const SHOW_DEMO = config.SHOW_DEMO !== false; // works even with an older config.js
-import { startDemo } from '../store/index.js';
+import { SITE_NAME } from '../config.js';
 
 export function authView() {
   let mode = 'signin';
@@ -60,9 +57,6 @@ export function authView() {
         h('li', {}, 'Upload scoreboard screenshots and pull stats automatically'),
         h('li', {}, 'Filter K/D, obj time, plants and defuses by map and mode'),
         h('li', {}, 'Private team spaces with invite codes'),
-        h('li', {}, 'VOD review with timestamped notes')),
-      SHOW_DEMO ? h('div', { class: 'demo-cta' },
-        h('button', { class: 'btn btn-lg', type: 'button', onclick: startDemo }, 'Try the demo →'),
-        h('span', { class: 'muted small' }, 'No account needed. Explore a sample team; nothing is saved to the cloud.')) : null),
+        h('li', {}, 'VOD review with timestamped notes'))),
     form);
 }

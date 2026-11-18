@@ -2,7 +2,6 @@ import { h, clear, fmtTime, parseTime, fmtDate, toast, modal, confirmDialog } fr
 import { state, teamPath, canEdit } from '../state.js';
 import { resultBadge, typeLabel, section } from './dashboard.js';
 import { scoreboard } from './matches.js';
-import { breakdownPanel } from './breakdown-panel.js';
 
 const MARK_TAGS = ['Rotation', 'Trade', 'Utility', 'Comms', 'Spawns', 'Clutch', 'Mistake', 'Highlight'];
 
@@ -10,7 +9,6 @@ export async function gameView(gameId) {
   const g = state.joined.find(x => x.id === gameId);
   if (!g) return h('div', { class: 'empty' }, h('p', {}, 'Game not found.'));
   const [media, marks] = await Promise.all([state.store.listMedia(gameId), state.store.listMarks(gameId)]);
-  const shared = { player: null }; // the VOD player, shared with the breakdown tagger
 
   const root = h('div', { class: 'page' },
     h('div', { class: 'page-head' }, h('div', {},
@@ -21,8 +19,7 @@ export async function gameView(gameId) {
     canEdit() ? h('a', { class: 'btn', href: teamPath(`match/${g.match_id}/edit`) }, 'Edit') : null),
     section('Scoreboard', null, scoreboard(g)),
     section('Screenshots', `${media.length}`, gallery(media)),
-    section('VOD review', 'Timestamped notes for this map', await vodPanel(g, marks, shared)),
-    section('Map breakdown', g.mode === 'Hardpoint' ? 'Tag every hill: who rotated first and whether it got broken' : g.mode === 'Search & Destroy' ? 'Tag every round: kills, deaths, plants and result' : 'Log key moments', await breakdownPanel(g, shared)));
+    section('VOD review', 'Timestamped notes for this map', await vodPanel(g, marks)));
   return root;
 }
 
@@ -91,7 +88,7 @@ async function makePlayer(vod) {
   return { el: host, getTime: () => v.currentTime, seek: t => { v.currentTime = t; v.play(); } };
 }
 
-async function vodPanel(g, marks, shared = {}) {
+async function vodPanel(g, marks) {
   const wrap = h('div', { class: 'vod' });
   let player = null;
   const playerSlot = h('div', { class: 'vod-player' });
@@ -100,7 +97,6 @@ async function vodPanel(g, marks, shared = {}) {
     clear(playerSlot).append(h('div', { class: 'loading' }, 'Loading video…'));
     try {
       player = await makePlayer(vod);
-      shared.player = player;
       clear(playerSlot).append(player.el);
     } catch (e) { clear(playerSlot).append(h('p', { class: 'muted' }, e.message)); }
   };

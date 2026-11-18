@@ -2,11 +2,9 @@ import { h, clear } from '../ui.js';
 
 /**
  * Sortable table.
- * columns: [{ key, label, tip, get(row), fmt(value,row), num, bar, cls, render(row), lead }]
- * lead: true → the top value in that column gets a gold ★ (leadMax can supply
- *       the max from outside, e.g. across both teams' tables).
+ * columns: [{ key, label, tip, get(row), fmt(value,row), num, bar, cls, render(row) }]
  */
-export function sortTable(columns, rows, { sort = null, desc = true, empty = 'No data yet', onRow = null, leadMax = null } = {}) {
+export function sortTable(columns, rows, { sort = null, desc = true, empty = 'No data yet', onRow = null } = {}) {
   let sortKey = sort, sortDesc = desc;
   const wrap = h('div', { class: 'table-wrap' });
   const val = (c, r) => (c.get ? c.get(r) : r[c.key]);
@@ -25,9 +23,6 @@ export function sortTable(columns, rows, { sort = null, desc = true, empty = 'No
       return sortDesc ? -cmp : cmp;
     });
     const maxes = Object.fromEntries(columns.filter(c => c.bar).map(c => [c.key, Math.max(0, ...rows.map(r => Number(val(c, r)) || 0))]));
-    const leads = Object.fromEntries(columns.filter(c => c.lead).map(c => [c.key,
-      leadMax?.[c.key] ?? Math.max(0, ...rows.map(r => Number(val(c, r)) || 0))]));
-    const isLead = (c, v) => c.lead && v != null && v !== '' && Number(v) > 0 && Math.abs(Number(v) - leads[c.key]) < 1e-9;
     wrap.append(h('table', { class: 'data' },
       h('thead', {}, h('tr', {}, columns.map(c => h('th', {
         class: [c.num ? 'num' : '', sortKey === c.key ? 'sorted' : ''].join(' '),
@@ -41,11 +36,11 @@ export function sortTable(columns, rows, { sort = null, desc = true, empty = 'No
           const content = c.render ? c.render(r) : (c.fmt ? c.fmt(v, r) : (v ?? '–'));
           if (c.bar && v != null) {
             const pct = maxes[c.key] ? Math.max(2, (Number(v) / maxes[c.key]) * 100) : 0;
-            return h('td', { class: `num bar-cell ${isLead(c, v) ? 'is-lead' : ''}` },
+            return h('td', { class: 'num bar-cell' },
               h('span', { class: 'bar-track', 'aria-hidden': 'true' }, h('span', { class: 'bar-fill', style: { width: `${pct}%` } })),
               h('span', { class: 'bar-val' }, content));
           }
-          return h('td', { class: [c.num ? 'num' : '', c.cls || '', isLead(c, v) ? 'is-lead' : ''].join(' ') }, content);
+          return h('td', { class: [c.num ? 'num' : '', c.cls || ''].join(' ') }, content);
         }))))));
   };
   render();

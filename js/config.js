@@ -12,10 +12,6 @@ export const SUPABASE_ANON_KEY = '';   // Project Settings → API → anon publ
 
 export const SITE_NAME = 'Killfeed';
 
-// Show a "Try the demo" button on the sign-in page (cloud mode only).
-// The demo runs entirely in the visitor's browser with a sample team.
-export const SHOW_DEMO = true;
-
 // Default modes for new teams (owners can edit per team)
 export const DEFAULT_MODES = ['Hardpoint', 'Search & Destroy', 'Control'];
 

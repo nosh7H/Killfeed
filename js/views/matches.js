@@ -70,7 +70,7 @@ export function scoreboard(g) {
   const fields = fieldsForMode(g.mode).filter(f => !f.optional || lines.some(s => s[f.key] != null && s[f.key] !== ''));
   return sortTable([
     { key: 'player_name', label: 'Player', render: s => h('a', { href: teamPath(`player/${encodeURIComponent(playerKey(s))}`) }, s.player_name) },
-    ...fields.map(f => ({ key: f.key, label: f.label, tip: f.long, num: true, lead: f.key !== 'deaths', fmt: v => (f.time ? fmtTime(v) : (v ?? '–')) })),
-    { key: 'kd', label: 'K/D', num: true, lead: true, get: s => (s.deaths ? s.kills / s.deaths : s.kills), fmt: v => v == null ? '–' : Number(v).toFixed(2) },
+    ...fields.map(f => ({ key: f.key, label: f.label, tip: f.long, num: true, fmt: v => (f.time ? fmtTime(v) : (v ?? '–')) })),
+    { key: 'kd', label: 'K/D', num: true, get: s => (s.deaths ? s.kills / s.deaths : s.kills), fmt: v => v == null ? '–' : Number(v).toFixed(2) },
   ], lines, { sort: 'kills', empty: 'No stats recorded for this map.' });
 }
