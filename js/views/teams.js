@@ -1,4 +1,4 @@
-import { h, toast } from '../ui.js';
+import { h, toast, confirmDialog } from '../ui.js';
 import { state, refreshTeams, go } from '../state.js';
 import { inDemoSession } from '../store/index.js';
 
@@ -51,16 +51,25 @@ export async function teamsView() {
         h('div', {}, h('strong', {}, t.name), h('div', { class: 'muted small' }, roleLabel(t.role))))))
       : h('p', { class: 'muted' }, 'You are not on a team yet. Create one or join with a code from your team owner.'),
     h('div', { class: 'grid-2 gap-lg' }, create, join),
-    local ? h('div', { class: 'card sample-card' },
-      h('div', {}, h('strong', {}, 'Just looking around?'), h('p', { class: 'muted small' }, 'Load a fictional team with two weeks of scrims to see how the dashboard works. You can delete it any time.')),
+    h('div', { class: 'card sample-card' },
+      h('div', {}, h('strong', {}, 'Sample team'),
+        h('p', { class: 'muted small' }, local
+          ? 'Load a fictional team with two weeks of scrims to see how the dashboard works. You can delete it any time.'
+          : 'Load “Sample Squad”, a fictional team with two weeks of scrims, into your account to try things out or show people around. Only you can see it unless you invite someone. Delete it any time in its Settings.')),
       h('button', {
         class: 'btn', onclick: async e => {
-          e.target.disabled = true;
-          const { loadSample } = await import('../sample.js');
-          const t = await loadSample(state.store);
-          await refreshTeams(); go(`#/t/${t.id}/home`);
+          const btn = e.currentTarget;
+          if (state.teams.some(t => t.name === 'Sample Squad') && !(await confirmDialog('You already have a Sample Squad. Load another one?', 'Load another'))) return;
+          btn.disabled = true; btn.textContent = 'Loading…';
+          try {
+            const { loadSample } = await import('../sample.js');
+            const t = await loadSample(state.store);
+            await refreshTeams();
+            toast('Sample team ready', 'success');
+            go(`#/t/${t.id}/home`);
+          } catch (err) { btn.disabled = false; btn.textContent = 'Load sample team'; toast(err.message, 'error'); }
         },
-      }, 'Load sample team')) : null);
+      }, 'Load sample team')));
 }
 
 export const roleLabel = r => ({ owner: 'Owner', coach: 'Coach', player: 'Player', viewer: 'Viewer' }[r] || r);
