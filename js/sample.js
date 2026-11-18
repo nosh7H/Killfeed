@@ -1,7 +1,8 @@
 // Generates a fictional sample team so the dashboard can be explored in demo mode.
 import { uid } from './ui.js';
+import { POOL_MAPS, MAP_POOL } from './config.js';
 
-const MAPS = ['Citadel', 'Dockside', 'Ironworks', 'Summit Base', 'Canal'];
+const MAPS = POOL_MAPS;
 const OPPS = ['Night Owls', 'Static Pulse', 'Red Line GG', 'Vanta', 'Grim Coast'];
 const ROSTER = [['Vexo', 'AR'], ['Kairo', 'SMG'], ['Trillo', 'Flex'], ['Mendez', 'SMG']];
 const BO5 = ['Hardpoint', 'Search & Destroy', 'Hijack', 'Hardpoint', 'Search & Destroy'];
@@ -21,8 +22,8 @@ export async function loadSample(store) {
     const date = new Date(today); date.setDate(today.getDate() - d * 2 - 1);
     const type = d % 4 === 0 ? 'match' : 'scrim';
     const games = BO5.map((mode, i) => {
-      const map = pick(MAPS);
-      const mapBias = { Citadel: 0.15, Dockside: -0.1, Ironworks: 0.05, 'Summit Base': -0.05, Canal: 0 }[map];
+      const map = pick(MAP_POOL[mode] || MAPS);
+      const mapBias = { 'Reactor U92': 0.15, Rooftops: -0.1, Lotus: 0.05, Munition: -0.05, Lithium: 0.08, Sentry: -0.04, Coal: 0, Silkworm: 0.02 }[map] ?? 0;
       const win = Math.random() < 0.5 + mapBias;
       let team_score, opp_score;
       if (mode === 'Hardpoint') { team_score = win ? 250 : rnd(120, 240); opp_score = win ? rnd(120, 240) : 250; }

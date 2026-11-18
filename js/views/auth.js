@@ -5,11 +5,16 @@ const { SITE_NAME } = config;
 const SHOW_DEMO = config.SHOW_DEMO !== false; // works even with an older config.js
 import { startDemo } from '../store/index.js';
 
+// This browser opened an event link without signing in (a viewer, player or captain): it gets a plain
+// staff sign-in here, with no demo and no sign-up, so the team analytics side stays with your organization.
+const eventVisitor = () => { try { return localStorage.getItem('kf-event-visitor') === '1'; } catch { return false; } };
+
 export function authView() {
   let mode = 'signin';
+  const visitor = eventVisitor();
   const email = h('input', { type: 'email', required: true, autocomplete: 'email', placeholder: 'you@example.com' });
   const pw = h('input', { type: 'password', required: true, minlength: 6, autocomplete: 'current-password', placeholder: '••••••••' });
-  const title = h('h2', {}, 'Sign in');
+  const title = h('h2', {}, visitor ? 'Staff sign in' : 'Sign in');
   const submit = h('button', { class: 'btn btn-primary', type: 'submit' }, 'Sign in');
   const toggle = h('button', { type: 'button', class: 'link' }, 'Need an account? Sign up');
   const msg = h('p', { class: 'muted small' });
@@ -29,7 +34,7 @@ export function authView() {
       e.preventDefault();
       submit.disabled = true;
       try {
-        if (mode === 'signin') await state.store.signIn(email.value, pw.value);
+        if (mode === 'signin') { await state.store.signIn(email.value, pw.value); try { localStorage.removeItem('kf-event-visitor'); } catch { /* ignore */ } }
         else {
           const r = await state.store.signUp(email.value, pw.value);
           if (r.needsConfirm) msg.textContent = 'Check your email to confirm your account, then sign in.';
@@ -42,7 +47,7 @@ export function authView() {
   h('label', {}, 'Email', email),
   h('label', {}, 'Password', pw),
   submit,
-  h('div', { class: 'row-between' }, toggle,
+  h('div', { class: 'row-between' }, visitor ? h('span') : toggle,
     h('button', {
       type: 'button', class: 'link', onclick: async () => {
         if (!email.value) return toast('Enter your email first', 'error');
@@ -61,7 +66,7 @@ export function authView() {
         h('li', {}, 'Filter K/D, obj time, plants and defuses by map and mode'),
         h('li', {}, 'Private team spaces with invite codes'),
         h('li', {}, 'VOD review with timestamped notes')),
-      SHOW_DEMO ? h('div', { class: 'demo-cta' },
+      SHOW_DEMO && !visitor ? h('div', { class: 'demo-cta' },
         h('button', { class: 'btn btn-lg', type: 'button', onclick: startDemo }, 'Try the demo →'),
         h('span', { class: 'muted small' }, 'No account needed. Explore a sample team; nothing is saved to the cloud.')) : null),
     form);

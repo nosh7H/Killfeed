@@ -239,7 +239,7 @@ export class SupabaseStore {
     return { teams, players, matches, games, stats, vetoes };
   }
   async evUpsert(table, rows) {
-    rows = [].concat(rows).map(r => (table === 'event_veto_keys' ? (({ id, ...rest }) => rest)(r) : r.id ? r : { ...r, id: uid() }));
+    rows = [].concat(rows).map(r => (table === 'event_veto_keys' || table === 'event_team_keys' ? (({ id, ...rest }) => rest)(r) : r.id ? r : { ...r, id: uid() }));
     if (rows.length) check(await this.sb.from(table).upsert(rows));
     return rows;
   }
@@ -273,6 +273,28 @@ export class SupabaseStore {
   async vetoKeys(id) { return check(await this.sb.from('event_veto_keys').select('*').eq('veto_id', id).maybeSingle()); }
   async vetoWhoami(id, key) { return key ? check(await this.sb.rpc('veto_whoami', { p_veto: id, p_key: key })) : null; }
   async vetoAct(id, key, choice) { return check(await this.sb.rpc('veto_act', { p_veto: id, p_key: key, p_choice: choice })); }
+
+  // ---- captains: everything goes through functions that check the captain key ----
+  async evLog(eventId, limit = 500) {
+    return check(await this.sb.from('event_log').select('*').eq('event_id', eventId).order('at', { ascending: false }).limit(limit));
+  }
+  async evLogAdd(row) { check(await this.sb.from('event_log').insert(row)); }
+  async myEventName(eventId) {
+    const user = await this.currentUser();
+    if (!user) return null;
+    const r = check(await this.sb.from('event_admins').select('display_name').eq('event_id', eventId).eq('user_id', user.id).maybeSingle());
+    return r?.display_name || user.email?.split('@')[0] || 'Staff';
+  }
+  async teamKeys(eventId) { return check(await this.sb.from('event_team_keys').select('*').eq('event_id', eventId)); }
+  async captainTeam(eventId, key) { return key ? check(await this.sb.rpc('captain_team', { p_event: eventId, p_key: key })) : null; }
+  async captainCheckin(key, matchId, ready) { check(await this.sb.rpc('captain_checkin', { p_key: key, p_match: matchId, p_ready: ready })); }
+  async captainReport(key, matchId, games) { check(await this.sb.rpc('captain_report', { p_key: key, p_match: matchId, p_games: games })); }
+  async captainMapWon(key, matchId, gameNo, weWon) { return check(await this.sb.rpc('captain_map_won', { p_key: key, p_match: matchId, p_game: gameNo, p_we_won: weWon })); }
+  async captainMapCheck(key, matchId, gameNo, ok) { check(await this.sb.rpc('captain_map_check', { p_key: key, p_match: matchId, p_game: gameNo, p_ok: ok })); }
+  async captainHelp(key, note) { check(await this.sb.rpc('captain_help', { p_key: key, p_note: note })); }
+  async captainShot(key, matchId, gameNo, image) { return check(await this.sb.rpc('captain_shot', { p_key: key, p_match: matchId, p_game: gameNo, p_image: image })); }
+  async reportShots(matchId) { return check(await this.sb.from('event_report_shots').select('*').eq('match_id', matchId).order('created_at')); }
+  async captainRoster(key, names) { check(await this.sb.rpc('captain_roster', { p_key: key, p_names: names })); }
 
   /** Realtime: calls cb whenever anything in this event changes. Returns an unsubscribe function. */
   subscribeEvent(eventId, cb) {

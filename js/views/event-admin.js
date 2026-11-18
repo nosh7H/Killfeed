@@ -1,16 +1,13 @@
 // Event admin: Setup (format, teams, groups, playoffs, display). Control panel + rows live in event-control.js.
 import { h, clear, toast, confirmDialog, uid, download } from '../ui.js';
 import { state, go } from '../state.js';
-import { ev, eventPath, refreshEvent, eventSettings, teamName, groupsFor, teamBadge, exportEvent, DEFAULT_EVENT_SETTINGS } from '../event-state.js';
-import { snakeGroups, roundRobin, buildBracket, GROUP_LABELS } from '../event-logic.js';
+import { ev, eventPath, refreshEvent, eventSettings, teamName, groupsFor, teamBadge, exportEvent, DEFAULT_EVENT_SETTINGS, finalDayName } from '../event-state.js';
+import { snakeGroups, roundRobin, buildBracket, GROUP_LABELS, TIEBREAKERS, pace, EST_DEFAULTS, roundKey, roundName } from '../event-logic.js';
 import { eventShell } from './event.js';
 import { FONT_STYLES, DEFAULT_ACCENT, applyFont } from '../theme.js';
+import { MAP_POOL } from '../config.js';
 
 const lines = v => [...new Set(String(v || '').split('\n').map(s => s.trim()).filter(Boolean))];
-const SCENES = [
-  ['live', 'Live matches with live scores + up next'], ['groups', 'Group standings'], ['kd:*', 'K/D leaders per mode (one screen per mode)'], ['teams', 'Team stats'],
-  ['bracket', 'Bracket'], ['awards', 'Awards (MVP, Obj King, Slayer…)'], ['queue', 'Live and up next (full screen)'],
-];
 
 function notAdmin(sub) { return eventShell(sub, h('div', { class: 'empty' }, h('p', {}, 'Only event admins can see this page.'))); }
 
@@ -27,7 +24,7 @@ export function eventSetup() {
   if (!ev.isAdmin) return notAdmin('setup');
   const root = h('div');
   const paint = () => clear(root).append(eventShell('setup', h('div', { class: 'stack' },
-    infoPanel(), formatPanel(), teamsPanel(), stagePanel(), displayPanel(), dangerPanel())));
+    infoPanel(), formatPanel(), teamsPanel(), accessPanel(), stagePanel(), tiebreakPanel(), timesPanel(), displayNote(), dangerPanel())));
 
   // ---- event info ----
   function infoPanel() {
@@ -64,25 +61,34 @@ export function eventSetup() {
     const bracket = h('select', {}, h('option', { value: 'double', selected: s.bracket === 'double' }, 'Double elimination'), h('option', { value: 'single', selected: s.bracket === 'single' }, 'Single elimination'));
     const modes = h('textarea', { rows: 4 }, s.modes.join('\n'));
     const order = h('input', { value: s.mode_order.join(', ') });
+    const caster = h('select', {},
+      h('option', { value: 'none', selected: s.caster === 'none' }, 'No caster — player POV stats only'),
+      h('option', { value: 'some', selected: (s.caster || 'some') === 'some' }, 'Some matches — tick “Casted” per match'),
+      h('option', { value: 'all', selected: s.caster === 'all' }, 'Every match is casted'));
     const vetoM = h('select', {}, h('option', { value: 'online', selected: s.veto_method !== 'in_person' }, 'Captain links (online)'), h('option', { value: 'in_person', selected: s.veto_method === 'in_person' }, 'In person (staff enters the maps)'));
     const maps = Object.fromEntries(s.modes.map(m => [m, h('textarea', { rows: 5, placeholder: 'One map per line' }, (s.maps[m] || []).join('\n'))]));
-    return panel('Format', 'Groups, bracket, series length, modes, maps and pods',
+    return panel('Format', 'Groups, bracket, series length, modes and maps',
       h('div', { class: 'grid-6' },
         h('label', {}, 'Groups', groups), h('label', {}, 'To playoffs', advance), h('label', {}, 'Playoffs', bracket),
         h('label', {}, 'Group Bo', gbo), h('label', {}, 'Playoff Bo', pbo), h('label', {}, 'Grand final Bo', fbo)),
       h('div', { class: 'grid-3' },
         h('label', {}, 'Modes', modes, h('span', { class: 'hint' }, 'One per line.')),
-        h('div', { class: 'field' }, h('span', {}, 'Rows and pods'), h('p', { class: 'hint' }, 'Pin teams to their group-stage rows and name the bracket rows on ', h('a', { href: eventPath('seating') }, 'Rows & pods'), '.'),
-          h('label', {}, 'Default veto', vetoM, h('span', { class: 'hint' }, 'Staff can always override or switch a single match on its page.'))),
+        h('div', { class: 'field' }, h('span', {}, 'Rows'), h('p', { class: 'hint' }, 'Pin teams to their group-stage rows and set bracket rows on ', h('a', { href: eventPath('seating') }, 'Rows'), '.'),
+          h('label', {}, 'Default veto', vetoM, h('span', { class: 'hint' }, 'Staff can always override or switch a single match on its page.')),
+          h('label', {}, 'Caster stats', caster, h('span', { class: 'hint' }, 'Player POV scoreboards show kills, deaths, hill time, plants and defuses. Damage, assists, non-traded kills, streaks, hill details and first bloods need a caster POV.'))),
         h('label', {}, 'Mode order per series', order, h('span', { class: 'hint' }, 'Comma separated. Repeats for longer series.'))),
       h('div', { class: 'grid-3' }, s.modes.map(m => h('label', {}, `${m} maps`, maps[m]))),
+      h('div', {}, h('button', {
+        class: 'btn btn-sm btn-ghost', 'data-tip': 'Fill each mode with the current competitive pool (then Save format)',
+        onclick: () => { for (const m of s.modes) if (MAP_POOL[m] && maps[m]) maps[m].value = MAP_POOL[m].join('\n'); toast('Current map pool filled in — click Save format'); },
+      }, 'Use current map pool')),
       h('div', {}, h('button', {
         class: 'btn btn-primary', onclick: async () => {
           const ms = lines(modes.value);
           await saveSettings({
             groups: groups.value === 'auto' ? 'auto' : +groups.value, advance: advance.value === 'all' ? 'all' : +advance.value, bracket: bracket.value,
             group_bo: +gbo.value || 5, playoff_bo: +pbo.value || 5, final_bo: +fbo.value || 5,
-            modes: ms, veto_method: vetoM.value,
+            modes: ms, veto_method: vetoM.value, caster: caster.value,
             mode_order: order.value.split(',').map(x => x.trim()).filter(Boolean),
             maps: Object.fromEntries(ms.map(m => [m, maps[m] ? lines(maps[m].value) : (ev.settings.maps[m] || [])])),
           });
@@ -197,6 +203,8 @@ export function eventSetup() {
                 }
               }
               if (!rows.length) return toast('Assign teams to groups first', 'error');
+              // match numbers: groups are 1, 2, 3 … in play order
+              rows.forEach((m, i) => { m.match_no = i + 1; });
               await state.store.evUpsert('event_matches', rows);
               await refreshEvent(); toast(`${rows.length} group matches created`, 'success'); paint();
             },
@@ -218,9 +226,11 @@ export function eventSetup() {
                 }
                 const tmpl = buildBracket(seeds.length, s.bracket);
                 const last = Math.max(...ev.data.matches.map(m => m.queue_pos || 0), 0);
+                // bracket match numbers continue after the group stage
+                const firstNo = Math.max(0, ...groupMatches.map(m => Number(m.match_no) || 0), groupMatches.length);
                 await state.store.evUpsert('event_matches', tmpl.map((m, i) => ({
                   ...m, event_id: ev.event.id, best_of: m.stage === 'grand' || (s.bracket === 'single' && m === tmpl[tmpl.length - 1]) ? s.final_bo : s.playoff_bo,
-                  status: 'scheduled', queue_pos: last + i + 1, team_a: null, team_b: null,
+                  status: 'scheduled', queue_pos: last + i + 1, team_a: null, team_b: null, match_no: firstNo + i + 1,
                 })));
                 await saveSettings({ seeds, seed_override: null });
                 toast('Playoffs generated', 'success'); paint();
@@ -247,67 +257,250 @@ export function eventSetup() {
     const seeds = currentSeeds();
     if (seeds.length < 2) return null;
     const manual = !!ev.settings.seed_override?.length;
+    const info = new Map(ev.seedTable.map(x => [x.id, x]));
     const move = async (i, d) => {
       const list = [...seeds]; const j = i + d;
       if (j < 0 || j >= list.length) return;
       [list[i], list[j]] = [list[j], list[i]];
       await saveSettings({ seed_override: list }); paint();
     };
+    const how = (ev.settings.seed_method || 'rank') === 'snake'
+      ? 'group winners first, then runners-up (A1, B1, C1, C2, B2, A2 …)'
+      : 'group winners first, ranked against each other with the tiebreakers, then runners-up the same way';
     return h('div', { class: 'step' }, h('div', { class: 'step-n' }, '↕'),
       h('div', { class: 'step-body' },
         h('strong', {}, 'Playoff seeding'),
-        h('p', { class: 'small muted' }, manual ? 'Manual order. Teams that qualify later are added at the bottom.' : 'Automatic from group results: group winners first, then runners-up, and so on (A1, B1, C1, C2, B2, A2 …). Use the arrows to change it.'),
-        h('ol', { class: 'seed-list' }, seeds.map((id, i) => h('li', {},
-          h('span', { class: 'seed-n' }, i + 1), h('span', { class: 'spacer' }, teamName(id)),
-          h('button', { class: 'icon-btn', 'aria-label': 'Move up', onclick: () => move(i, -1) }, '↑'),
-          h('button', { class: 'icon-btn', 'aria-label': 'Move down', onclick: () => move(i, 1) }, '↓'))))),
+        h('p', { class: 'small muted' }, manual ? 'Manual order. Teams that qualify later are added at the bottom.' : `Automatic from group results: ${how}. Use the arrows to rearrange.`),
+        h('ol', { class: 'seed-list' }, seeds.map((id, i) => {
+          const x = info.get(id);
+          return h('li', {},
+            h('span', { class: 'seed-n' }, i + 1), h('span', { class: 'spacer' }, teamName(id),
+              x ? h('span', { class: 'muted small' }, ` · ${x.group}${x.place}`) : null,
+              !manual && x?.tb ? tbChip(x.tb, i < seeds.length - 1 ? seeds[i + 1] : null) : null),
+            h('button', { class: 'icon-btn', 'aria-label': 'Move up', onclick: () => move(i, -1) }, '↑'),
+            h('button', { class: 'icon-btn', 'aria-label': 'Move down', onclick: () => move(i, 1) }, '↓'));
+        }))),
       manual ? h('button', { class: 'btn btn-sm btn-ghost', onclick: async () => { await saveSettings({ seed_override: null }); paint(); } }, 'Back to automatic') : h('span'));
   }
 
-  // ---- display ----
-  function displayPanel() {
-    const d = ev.settings.display;
-    const secs = h('input', { type: 'range', min: 10, max: 60, step: 5, value: d.seconds });
-    const secsOut = h('strong', {}, `${d.seconds}s`);
-    secs.oninput = () => { secsOut.textContent = `${secs.value}s`; };
-    const minG = h('input', { type: 'number', min: 1, max: 20, value: d.min_games, class: 'in-num' });
-    const ticker = h('input', { type: 'checkbox', checked: d.ticker !== false });
-    const leaders = h('input', { type: 'checkbox', checked: d.leaders !== false });
-    const dfont = h('select', {}, FONT_STYLES.map(([k, l]) => h('option', { value: k, selected: (d.font || 'mix') === k }, l)));
-    const enabled = new Set(d.scenes.map(x => (x.startsWith('kd:') ? 'kd:*' : x)));
-    const order = SCENES.map(([k]) => k).sort((a, b) => {
-      const ia = d.scenes.findIndex(x => (x.startsWith('kd:') ? 'kd:*' : x) === a), ib = d.scenes.findIndex(x => (x.startsWith('kd:') ? 'kd:*' : x) === b);
-      return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
-    });
-    const list = h('ol', { class: 'scene-list' });
-    const renderList = () => {
-      clear(list).append(...order.map((k, i) => h('li', {},
-        h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: enabled.has(k), onchange: e => { e.target.checked ? enabled.add(k) : enabled.delete(k); } }), SCENES.find(s => s[0] === k)[1]),
-        h('span', { class: 'row' },
-          i ? h('button', { class: 'icon-btn', 'aria-label': 'Move up', onclick: () => { [order[i - 1], order[i]] = [order[i], order[i - 1]]; renderList(); } }, '↑') : null,
-          i < order.length - 1 ? h('button', { class: 'icon-btn', 'aria-label': 'Move down', onclick: () => { [order[i + 1], order[i]] = [order[i], order[i + 1]]; renderList(); } }, '↓') : null))));
-    };
-    renderList();
-    const url = `${location.origin}${location.pathname}#/display/${ev.event.id}`;
-    return panel('Display screen', 'The rotating screen for the venue TV and the stream',
-      h('div', { class: 'grid-2 gap-lg' },
-        h('div', { class: 'stack-sm' },
-          h('label', {}, h('span', {}, 'Time per screen: ', secsOut), secs),
-          h('label', {}, 'Minimum maps to appear on K/D boards', minG),
-          h('label', {}, 'Font style (screen)', dfont),
-          h('label', { class: 'check' }, ticker, 'Show the “Live / Up next” bar on every screen'),
-          h('label', { class: 'check' }, leaders, 'Scroll category leaders (K/D per mode, obj time, first bloods…) in that bar'),
-          h('p', { class: 'small' }, 'Link for OBS (Browser Source, 1920×1080) or the TV:'),
-          h('div', { class: 'row' }, h('code', { class: 'url' }, url),
-            h('button', { class: 'btn btn-sm', onclick: () => { navigator.clipboard.writeText(url); toast('Copied'); } }, 'Copy'))),
-        h('div', {}, h('div', { class: 'small muted' }, 'Screens, in order'), list)),
+  // ---- estimated start times ----
+  function timesPanel() {
+    const e = { ...EST_DEFAULTS, ...(ev.settings.est || {}) };
+    const p = pace(ev.data.matches, ev.data.games, ev.settings);
+    const sessions = ev.settings.seating?.sessions || [];
+    // a stored "HH:MM" (older events) becomes a full date + time on the event's date
+    const asLocal = v => (!v ? '' : /T/.test(v) ? v.slice(0, 16) : ev.event.starts_on ? `${ev.event.starts_on}T${v.padStart(5, '0')}` : '');
+    const when = v => h('input', { type: 'datetime-local', value: asLocal(v) });
+    const perMap = h('input', { type: 'number', min: 3, max: 40, step: 1, value: e.map_minutes, class: 'in-num' });
+    const slot = h('input', { type: 'number', min: 0, max: 180, step: 5, value: e.slot_minutes ?? 60, class: 'in-num' });
+    const brk = h('input', { type: 'number', min: 15, max: 30, step: 1, value: Math.min(30, Math.max(15, e.break_minutes)), class: 'in-num' });
+    const top = h('input', { type: 'number', min: 0, max: 32, step: 1, value: ev.settings.final_top ?? 6, class: 'in-num' });
+    const pub = h('input', { type: 'checkbox', checked: e.public !== false });
+    const ses = sessions.map(x => [x.id, when(e.session_starts?.[x.id] || (x.id === sessions[0]?.id ? e.day_start : ''))]);
+    const bracketAt = when(e.bracket_start), sundayAt = when(e.sunday_start);
+    const fd = ev.finalDay;
+    return panel('Schedule & match timing', 'Set when each part of the event starts; estimated start times count from there. Each map takes about 15 minutes. After a match, a team gets a break (also its time to log in and set up), and its next match starts at least an hour after the last one started: a 3–0 is 3 × 15 + 15 = 1 hour, and every extra map adds 15 minutes. If both teams ready up early, they can start right away. Teams only waiting on other matches start as soon as those finish.',
+      h('div', { class: 'sched-grid' },
+        ses.map(([id, inp], i) => h('label', {}, `${sessions[i].name} groups start`, inp)),
+        h('label', {}, 'Bracket play starts', bracketAt),
+        h('label', {}, 'Final day starts', sundayAt)),
+      h('div', { class: 'grid-4' },
+        h('label', {}, 'Minutes per map', perMap),
+        h('label', {}, 'Break between matches (15–30)', brk),
+        h('label', {}, 'Minimum, start to next start', slot),
+        h('label', {}, 'Teams that make the final day', top)),
+      h('p', { class: 'small muted' }, fd
+        ? `Top ${fd.top} play ${finalDayName()}: the 2 teams in the winners final and the teams left in the losers bracket. ${fd.qualifies.size} matches send their winner there (they glow purple: “Winner → ${finalDayName()}”). In the upper semis both teams are already through (“Both → ${finalDayName()}”). Teams that are through see “Qualified for ${finalDayName()}”. Set 0 for no cut.`
+        : 'Top teams that play the final day: their qualifying matches glow purple once the bracket exists. Set 0 for no cut.'),
+      finalRoundsPicker(),
+      h('label', { class: 'inline' }, pub, 'Show estimated start times to players and on the display'),
+      h('p', { class: 'small muted' }, p.samples
+        ? `Learned so far: ${p.learned.toFixed(1)} min per map from ${p.samples} finished match${p.samples === 1 ? '' : 'es'}. Estimates use ${p.mapMin.toFixed(1)} min (your setting counts less as more matches finish).`
+        : 'Nothing finished yet, so estimates use your minutes per map. Once matches finish, the real pace takes over.'),
       h('div', {}, h('button', {
-        class: 'btn btn-primary', onclick: async () => {
-          const scenes = order.filter(k => enabled.has(k)).flatMap(k => (k === 'kd:*' ? ev.settings.modes.map(m => `kd:${m}`) : [k]));
-          await saveSettings({ display: { ...ev.settings.display, seconds: +secs.value, min_games: +minG.value || 1, ticker: ticker.checked, leaders: leaders.checked, scenes, scenes_v: 2, font: dfont.value } });
-          toast('Display updated — open screens switch over automatically', 'success'); paint();
+        class: 'btn btn-primary', 'data-submit': '', onclick: async () => {
+          await saveSettings({
+            final_top: Math.max(0, Math.round(+top.value || 0)),
+            est: { ...e, day_start: '', map_minutes: Math.max(3, +perMap.value || 15), setup_minutes: 0, slot_minutes: Math.max(0, +slot.value || 0),
+              break_minutes: Math.min(30, Math.max(15, +brk.value || 15)), public: pub.checked,
+              session_starts: Object.fromEntries(ses.map(([id, inp]) => [id, inp.value || ''])),
+              bracket_start: bracketAt.value || '', sunday_start: sundayAt.value || '' },
+          });
+          toast('Schedule saved', 'success'); paint();
         },
-      }, 'Save display')));
+      }, 'Save')));
+  }
+
+  // which bracket rounds are played on the final day (the rest is Saturday): automatic, or ticked by staff
+  function finalRoundsPicker() {
+    const real = ev.data.matches.filter(m => m.stage !== 'group');
+    const bm = real.length ? real : ev.bracketPreview || [];
+    if (!bm.length || !(Number(ev.settings.final_top ?? 6) > 0)) return null;
+    const order = { upper: 0, lower: 1, grand: 2 };
+    const rounds = [];
+    for (const m of [...bm].sort((a, b) => order[a.stage] - order[b.stage] || a.round - b.round)) {
+      const k = roundKey(m);
+      if (!rounds.some(x => x.key === k)) rounds.push({ key: k, label: roundName(m, bm), stage: m.stage, n: bm.filter(x => roundKey(x) === k).length });
+    }
+    const picked = ev.settings.final_rounds?.length ? new Set(ev.settings.final_rounds) : null;
+    const isSun = k => (picked ? picked.has(k) : bm.some(m => roundKey(m) === k && ev.finalDay?.sunday.has(m.id)));
+    const save = async keys => { await saveSettings({ final_rounds: keys }); toast(keys ? 'Final-day rounds saved' : 'Back to automatic', 'success'); paint(); };
+    const box = (x) => h('label', { class: `fr-round ${isSun(x.key) ? 'on' : ''}` },
+      h('input', {
+        type: 'checkbox', checked: isSun(x.key),
+        onchange: () => {
+          const cur = new Set(rounds.filter(y => isSun(y.key)).map(y => y.key));
+          cur.has(x.key) ? cur.delete(x.key) : cur.add(x.key);
+          save([...cur]);
+        },
+      }),
+      h('span', {}, x.label), h('span', { class: 'muted small' }, `${x.n} match${x.n === 1 ? '' : 'es'}`));
+    const col = stage => rounds.filter(x => x.stage === stage);
+    return h('details', { class: 'block-inner fr-pick', open: !!picked },
+      h('summary', {}, h('strong', {}, `Rounds played on ${finalDayName()}`),
+        h('span', { class: 'muted small' }, picked ? ' · picked by you' : ' · automatic')),
+      h('p', { class: 'small muted' }, `Tick the rounds played on ${finalDayName()}. Everything else is Saturday. Matches that send their winner into a ticked round glow purple (“Winner → ${finalDayName()}”), and teams in a ticked round show as qualified.`),
+      h('div', { class: 'fr-cols' },
+        ['upper', 'lower', 'grand'].map(st => col(st).length ? h('div', { class: 'fr-col' },
+          h('div', { class: 'eyebrow' }, { upper: 'Upper bracket', lower: 'Lower bracket', grand: 'Final' }[st]), col(st).map(box)) : null)),
+      picked ? h('button', { class: 'btn btn-sm btn-ghost', onclick: () => save(null) }, 'Back to automatic') : null);
+  }
+
+  // ---- tiebreakers: rules, coin flips, and rearranging a group by hand ----
+  function tiebreakPanel() {
+    const s = ev.settings;
+    const labels = Object.keys(ev.standings);
+    const coins = ev.coinsNeeded;
+    const method = h('select', {
+      onchange: async e => { await saveSettings({ seed_method: e.target.value }); toast('Seeding updated', 'success'); paint(); },
+    }, h('option', { value: 'rank', selected: (s.seed_method || 'rank') === 'rank' }, 'Rank each place with the tiebreakers (A1/B1/C1… best record first)'),
+    h('option', { value: 'snake', selected: s.seed_method === 'snake' }, 'Fixed group order (A1, B1, C1, C2, B2, A2 …)'));
+
+    const flipCard = c => {
+      const picked = [];
+      const box = h('div', { class: 'coin-card' });
+      const save = async order => {
+        await saveSettings({ coin_flips: { ...(ev.settings.coin_flips || {}), [c.key]: order } });
+        toast(`${teamName(order[0])} won the coin flip`, 'success'); paint();
+      };
+      const draw = () => {
+        const left = c.ids.filter(id => !picked.includes(id));
+        clear(box).append(
+          h('div', {}, h('strong', {}, c.where), h('span', { class: 'muted small' }, ` · ${c.ids.map(teamName).join(', ')} are tied on record, head to head and map win %`)),
+          c.ids.length === 2
+            ? h('div', { class: 'row wrap' }, h('span', { class: 'small' }, 'Who won the flip?'),
+              c.ids.map(id => h('button', { class: 'btn btn-sm', 'data-submit': '', onclick: () => save([id, ...c.ids.filter(x => x !== id)]) }, teamName(id))))
+            : h('div', { class: 'row wrap' }, h('span', { class: 'small' }, picked.length ? `Order so far: ${picked.map(teamName).join(' → ')}. Next:` : 'Click teams in the order they finished the flips:'),
+              left.map(id => h('button', {
+                class: 'btn btn-sm', onclick: () => { picked.push(id); if (picked.length >= c.ids.length - 1) save([...picked, ...c.ids.filter(x => !picked.includes(x))]); else draw(); },
+              }, teamName(id)))),
+          h('button', {
+            class: 'btn btn-sm btn-ghost', 'data-tip': 'Picks a random order and saves it',
+            onclick: () => { const o = [...c.ids]; for (let i = o.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [o[i], o[j]] = [o[j], o[i]]; } save(o); },
+          }, '🪙 Flip for me'));
+      };
+      draw();
+      return box;
+    };
+
+    const doneFlips = Object.entries(s.coin_flips || {});
+    const groupOrder = l => {
+      const rows = ev.standings[l];
+      const manual = !!s.group_override?.[l]?.length;
+      const move = async (i, d) => {
+        const ids = rows.map(r => r.team.id); const j = i + d;
+        if (j < 0 || j >= ids.length) return;
+        [ids[i], ids[j]] = [ids[j], ids[i]];
+        await saveSettings({ group_override: { ...(s.group_override || {}), [l]: ids } }); paint();
+      };
+      return h('div', { class: 'tb-group' },
+        h('div', { class: 'row' }, h('strong', {}, `Group ${l}`), manual ? h('span', { class: 'chip chip-warn' }, 'Set by staff') : null, h('span', { class: 'spacer' }),
+          manual ? h('button', { class: 'btn btn-sm btn-ghost', onclick: async () => { const o = { ...(s.group_override || {}) }; delete o[l]; await saveSettings({ group_override: o }); paint(); } }, 'Back to automatic') : null),
+        h('ol', { class: 'seed-list' }, rows.map((r, i) => h('li', {},
+          h('span', { class: 'seed-n' }, i + 1),
+          h('span', { class: 'spacer' }, r.team.name, h('span', { class: 'muted small' }, ` · ${r.sw}–${r.sl} · maps ${Math.round((r.mpct || 0) * 100)}%`),
+            !manual && r.tb ? tbChip(r.tb, rows[i + 1]?.team.id) : null),
+          h('button', { class: 'icon-btn', 'aria-label': 'Move up', onclick: () => move(i, -1) }, '↑'),
+          h('button', { class: 'icon-btn', 'aria-label': 'Move down', onclick: () => move(i, 1) }, '↓')))));
+    };
+
+    return panel('Tiebreakers', 'How tied teams are ordered in the groups and for playoff seeding. You can rearrange anything by hand.',
+      h('ol', { class: 'tb-rules' }, TIEBREAKERS.map(([, nm], i) => h('li', {}, h('b', {}, `${'abcd'[i]}.`), ' ', nm))),
+      h('p', { class: 'small muted' }, 'Head to head counts series between the tied teams only. When three or more are tied and a rule separates some of them, the rules start again from head to head for the teams still level.'),
+      h('label', {}, 'Playoff seeding across groups', method),
+      coins.length
+        ? h('div', { class: 'stack-sm' }, h('div', { class: 'eyebrow warn-text' }, `Coin flip${coins.length > 1 ? 's' : ''} needed`), coins.map(flipCard))
+        : null,
+      doneFlips.length
+        ? h('div', { class: 'small muted' }, 'Coin flips done: ', doneFlips.map(([k, order], i) => h('span', {},
+          i ? ' · ' : '', `${order.map(teamName).join(' > ')} `,
+          h('button', { class: 'link-btn', onclick: async () => { const o = { ...(s.coin_flips || {}) }; delete o[k]; await saveSettings({ coin_flips: o }); paint(); } }, 'undo'))))
+        : null,
+      labels.length
+        ? h('details', { class: 'block-inner', open: tbOpen, ontoggle: e => { tbOpen = e.currentTarget.open; } }, h('summary', {}, h('strong', {}, 'Rearrange group standings'), h('span', { class: 'muted small' }, ' · for rulings or forfeits')),
+          h('div', { class: 'tb-groups' }, labels.map(groupOrder)))
+        : h('div', { class: 'empty-sm' }, 'Standings appear once teams are in groups.'));
+  }
+
+  // ---- roles + captain links ----
+  function accessPanel() {
+    const body = h('div', { class: 'stack-sm' }, h('div', { class: 'muted small' }, 'Loading…'));
+    const roles = h('div', { class: 'roles-grid' }, [
+      ['Viewer', 'r-viewer', 'Anyone with the event link. Bracket, stats, teams, display. Read only.'],
+      ['Player', 'r-player', 'Picks their team on the event page (no login). Sees where they sit, when they play, live scores and their team’s stats.'],
+      ['Captain', 'r-captain', 'Opens their team’s private link. Everything a player sees, plus: check in, map veto, report scores for you to approve, call staff, fix the roster.'],
+      ['Admin / staff', 'r-admin', 'Signed in with the admin code. Control panel, seating, display, setup, approving scores.'],
+    ].map(([t, c, d]) => h('div', { class: 'role-card' }, h('span', { class: `role-dot ${c}` }), h('div', {}, h('strong', {}, t), h('p', { class: 'small muted' }, d)))));
+    const draw = async () => {
+      const { randomKey } = await import('../veto.js');
+      const { captainLink } = await import('../event-state.js');
+      const keys = await state.store.teamKeys(ev.event.id).catch(() => []);
+      const byTeam = new Map(keys.map(x => [x.team_id, x.captain_key]));
+      const teams = ev.data.teams.slice().sort((a, b) => a.name.localeCompare(b.name));
+      const missing = teams.filter(t => !byTeam.has(t.id));
+      const make = async list => {
+        await state.store.evUpsert('event_team_keys', list.map(t => ({ team_id: t.id, event_id: ev.event.id, captain_key: randomKey() + randomKey() })));
+        draw();
+      };
+      const allText = () => teams.filter(t => byTeam.has(t.id)).map(t => `${t.name}: ${captainLink(byTeam.get(t.id))}`).join('\n');
+      clear(body).append(...[
+        teams.length ? null : h('div', { class: 'empty-sm' }, 'Add teams first.'),
+        missing.length ? h('div', { class: 'row' }, h('button', { class: 'btn btn-primary', onclick: () => make(missing) }, `Create captain links (${missing.length})`),
+          h('span', { class: 'small muted' }, 'One private link per team. Send it only to that team’s captain.')) : null,
+        keys.length ? h('div', { class: 'table-wrap' }, h('table', { class: 'data tight' },
+          h('thead', {}, h('tr', {}, h('th', {}, 'Team'), h('th', {}, 'Captain link'), h('th', {}))),
+          h('tbody', {}, teams.filter(t => byTeam.has(t.id)).map(t => {
+            const url = captainLink(byTeam.get(t.id));
+            return h('tr', {},
+              h('td', {}, teamBadge(t.id, 'xs'), t.name),
+              h('td', {}, h('code', { class: 'url small' }, url.replace(/cap=(.{4}).*/, 'cap=$1••••••'))),
+              h('td', {}, h('div', { class: 'row' },
+                h('button', { class: 'btn btn-sm', onclick: () => { navigator.clipboard.writeText(url); toast(`${t.name} captain link copied`); } }, 'Copy'),
+                h('button', {
+                  class: 'btn btn-sm btn-ghost', 'data-tip': 'Makes the old link stop working (lost or shared by mistake)',
+                  onclick: async () => { if (await confirmDialog(`Make a new captain link for ${t.name}? The old one stops working.`, 'New link')) make([t]); },
+                }, 'New link'))));
+          })))) : null,
+        keys.length ? h('div', { class: 'row' },
+          h('button', { class: 'btn btn-sm', onclick: () => { navigator.clipboard.writeText(allText()); toast('All captain links copied'); } }, 'Copy all'),
+          h('button', { class: 'btn btn-sm btn-ghost', onclick: () => printSheet(teams.filter(t => byTeam.has(t.id)).map(t => [t, captainLink(byTeam.get(t.id))])) }, 'Print slips')) : null,
+      ].filter(Boolean));
+    };
+    draw();
+    return panel('Roles & captain links', 'Who can do what. Use “Preview as” at the top right to see each role.', roles, body);
+  }
+
+  function printSheet(rows) {
+    const w = window.open('', '_blank');
+    if (!w) return toast('Allow pop-ups to print', 'error');
+    const esc = x => String(x).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+    w.document.write(`<!doctype html><title>Captain links</title><style>body{font:14px system-ui;margin:24px}div{border:1px dashed #999;padding:14px;margin:0 0 12px;page-break-inside:avoid}h2{margin:0 0 4px;font-size:18px}code{word-break:break-all;font-size:12px}p{margin:6px 0 0;color:#555;font-size:12px}</style>${rows.map(([t, url]) => `<div><h2>${esc(t.name)} · captain</h2><code>${esc(url)}</code><p>Open on your phone. Check in, do the map veto, report scores and call staff from here. Don’t share it.</p></div>`).join('')}<script>print()<\/script>`);
+    w.document.close();
+  }
+
+  // ---- display moved to its own admin tab ----
+  function displayNote() {
+    return panel('Display screen', null, h('p', { class: 'small' }, 'Screens, presets, timing and the OBS link are on the ', h('a', { href: eventPath('screens') }, 'Display'), ' tab.'));
   }
 
   function dangerPanel() {
@@ -330,6 +523,14 @@ export function eventSetup() {
 
   paint();
   return root;
+}
+
+let tbOpen = false; // keep "Rearrange group standings" open between repaints
+const TB_SHORT = { record: null, h2h: 'H2H', maps: 'Map %', coin: 'Coin flip', 'coin?': 'Coin flip needed' };
+const TB_LONG = { h2h: 'head to head', maps: 'map win %', coin: 'coin flip', 'coin?': 'nothing yet: a coin flip is needed' };
+function tbChip(tb, below) {
+  if (!TB_SHORT[tb]) return null;
+  return h('span', { class: `chip tb-chip ${tb === 'coin?' ? 'chip-warn' : ''}`, 'data-tip': tb === 'coin?' ? `Tied with ${below ? teamName(below) : 'the next team'} on every rule: a coin flip is needed` : `Ahead of ${below ? teamName(below) : 'the next team'} on ${TB_LONG[tb]}` }, TB_SHORT[tb]);
 }
 
 function panel(title, sub, ...body) {

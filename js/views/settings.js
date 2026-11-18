@@ -1,4 +1,5 @@
 import { h, clear, toast, confirmDialog, download, uid } from '../ui.js';
+import { POOL_MAPS } from '../config.js';
 import { state, isOwner, canEdit, refreshData, refreshTeams, go, teamPath } from '../state.js';
 import { section } from './dashboard.js';
 import { roleLabel } from './teams.js';
@@ -38,7 +39,8 @@ export async function settingsView() {
     h('div', { class: 'grid-2' }, h('label', {}, 'Name', name), h('label', {}, 'Tag', tag)),
     colorField,
     h('div', { class: 'grid-2' },
-      h('label', {}, 'Map pool', maps, h('span', { class: 'muted small' }, 'Shown in map pickers and filters. New maps you log get added automatically.')),
+      h('label', {}, 'Map pool', maps, h('span', { class: 'muted small' }, 'Shown in map pickers and filters. New maps you log get added automatically.'),
+        owner ? h('button', { type: 'button', class: 'btn btn-sm btn-ghost', style: { alignSelf: 'flex-start' }, 'data-tip': POOL_MAPS.join(', '), onclick: () => { maps.value = POOL_MAPS.join('\n'); toast('Current map pool filled in — click Save'); } }, 'Use current map pool') : null),
       h('label', {}, 'Modes', modes, h('span', { class: 'muted small' }, 'Stat columns adapt to Hardpoint, Search & Destroy and Control. Other modes show every column.'))),
     owner ? h('button', {
       class: 'btn btn-primary', onclick: async () => {

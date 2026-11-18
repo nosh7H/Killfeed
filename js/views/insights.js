@@ -1,7 +1,7 @@
 // Team Insights: pick/ban assistant + "what wins us maps" + player impact.
 import { h, clear, fmtPct } from '../ui.js';
 import { state, teamPath } from '../state.js';
-import { MATCH_TYPES } from '../config.js';
+import { MATCH_TYPES, poolFor } from '../config.js';
 import { mapStrength, vetoAdvice, winFactors, playerImpact } from '../analytics.js';
 import { playerKey } from '../stats.js';
 import { section, resultBadge } from './dashboard.js';
@@ -52,7 +52,7 @@ export async function insightsView() {
     const pool = state.team.maps || [];
     return h('div', { class: 'pb-grid' }, modes.map(mode => {
       const rows = strength[mode];
-      const adv = vetoAdvice(rows, pool);
+      const adv = vetoAdvice(rows, poolFor(mode, pool));
       const noteCount = map => notesList.filter(n => n.map === map && (!n.mode || n.mode === mode)).length;
       return h('div', { class: 'pb-card' },
         h('div', { class: 'pb-head' }, h('h3', {}, mode), h('span', { class: 'muted small' }, `${rows.reduce((s, r) => s + r.n, 0)} maps`)),

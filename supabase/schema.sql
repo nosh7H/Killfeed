@@ -374,6 +374,12 @@ create table if not exists public.event_matches (
   updated_at  timestamptz not null default now()
 );
 alter table public.event_matches add column if not exists live jsonb;  -- running score of the map in play: { game_no, a, b }
+alter table public.event_matches add column if not exists casted boolean not null default false;  -- caster POV → advanced stats
+alter table public.event_matches add column if not exists row_a int;     -- bracket: row team A reports to
+alter table public.event_matches add column if not exists row_b int;     -- bracket: row team B reports to
+alter table public.event_matches add column if not exists match_no int;  -- permanent match number for records
+alter table public.event_matches add column if not exists started_at timestamptz;  -- went live (for estimated start times)
+alter table public.event_matches add column if not exists ended_at timestamptz;    -- went final
 
 create table if not exists public.event_games (
   id        uuid primary key default gen_random_uuid(),
@@ -386,6 +392,9 @@ create table if not exists public.event_games (
   b_score   int
 );
 
+-- the map's winner when staff only record who won (final score added later, or never)
+alter table public.event_games add column if not exists winner text check (winner in ('a', 'b'));
+
 create table if not exists public.event_stats (
   id           uuid primary key default gen_random_uuid(),
   event_id     uuid not null references public.events(id) on delete cascade,
@@ -396,6 +405,12 @@ create table if not exists public.event_stats (
   kills int not null default 0, deaths int not null default 0,
   assists int, damage int, obj_time int, plants int, defuses int, first_bloods int, captures int
 );
+-- caster-only stats (entered for casted matches)
+alter table public.event_stats add column if not exists non_traded_kills int;
+alter table public.event_stats add column if not exists highest_streak int;
+alter table public.event_stats add column if not exists avg_hill_time int;   -- seconds
+alter table public.event_stats add column if not exists obj_kills int;
+alter table public.event_stats add column if not exists contested_time int;  -- seconds
 
 create table if not exists public.event_media (
   id         uuid primary key default gen_random_uuid(),
@@ -535,28 +550,320 @@ create policy event_vetoes_write on public.event_vetoes for all using (is_event_
 create policy event_veto_keys_all on public.event_veto_keys for all using (is_event_admin(event_id)) with check (is_event_admin(event_id));
 
 -- Which team does this captain link belong to? ('a', 'b' or null)
+-- ============================================================
+-- ROLES: viewer (public link) · player (picks their team, no login)
+--        captain (private link per team) · admin/staff (event_admins)
+-- Captains act only through the functions below, which check their key.
+-- ============================================================
+create table if not exists public.event_team_keys (
+  team_id     uuid primary key references public.event_teams(id) on delete cascade,
+  event_id    uuid not null references public.events(id) on delete cascade,
+  captain_key text not null unique
+);
+alter table public.event_team_keys enable row level security;
+drop policy if exists event_team_keys_all on public.event_team_keys;
+create policy event_team_keys_all on public.event_team_keys for all using (is_event_admin(event_id)) with check (is_event_admin(event_id));
+
+alter table public.event_matches add column if not exists checkin jsonb not null default '{}'::jsonb;  -- { <team_id>: timestamp }
+alter table public.event_matches add column if not exists reports jsonb not null default '{}'::jsonb;  -- { <team_id>: { games: [{game_no, us, them}], at } }
+alter table public.event_teams   add column if not exists help jsonb;                                   -- staff call: { at, note }
+
+-- which team a captain link belongs to (null = not a captain link for this event)
+-- ---------- activity log: who changed what (staff and captains), with the data before/after for revert ----------
+create table if not exists public.event_log (
+  id        uuid primary key default gen_random_uuid(),
+  event_id  uuid not null references public.events(id) on delete cascade,
+  at        timestamptz not null default now(),
+  actor     text,                 -- staff name, or 'Captain · NOWL'
+  group_id  text,                 -- writes from one action share a group (reverted together)
+  kind      text,                 -- 'staff' | 'captain' | 'revert'
+  summary   text,
+  match_id  uuid,                 -- no foreign key: the log outlives deleted matches
+  before    jsonb,                -- { table: [rows] } as they were (null = new rows)
+  after     jsonb,                -- { table: [rows] } as written
+  reverts   text                  -- group_id this entry undid
+);
+create index if not exists ev_log_idx on public.event_log(event_id, at desc);
+alter table public.event_log enable row level security;
+drop policy if exists ev_log_read on public.event_log;
+drop policy if exists ev_log_write on public.event_log;
+create policy ev_log_read  on public.event_log for select using (is_event_admin(event_id));
+create policy ev_log_write on public.event_log for insert with check (is_event_admin(event_id));
+-- no update / delete policy: entries can't be edited or removed (they go when the event is deleted)
+
+create or replace function public._log(p_event uuid, p_match uuid, p_team uuid, p_summary text)
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  insert into event_log(event_id, match_id, actor, kind, summary, group_id)
+  values (p_event, p_match, 'Captain · ' || coalesce((select coalesce(nullif(tag, ''), name) from event_teams where id = p_team), '?'), 'captain', p_summary, gen_random_uuid()::text);
+end $$;
+revoke execute on function public._log(uuid, uuid, uuid, text) from public, anon, authenticated;
+
+create or replace function public.captain_team(p_event uuid, p_key text)
+returns uuid language sql security definer stable set search_path = public as $$
+  select team_id from event_team_keys where event_id = p_event and captain_key = p_key;
+$$;
+
+create or replace function public._captain(p_key text)
+returns event_team_keys language plpgsql security definer stable set search_path = public as $$
+declare k event_team_keys;
+begin
+  select * into k from event_team_keys where captain_key = p_key;
+  if k.team_id is null then raise exception 'This captain link is not valid'; end if;
+  return k;
+end $$;
+
+-- the match must be in this event, not final, and (for group matches) include the team
+create or replace function public._captain_match(k event_team_keys, p_match uuid)
+returns event_matches language plpgsql security definer stable set search_path = public as $$
+declare m event_matches;
+begin
+  select * into m from event_matches where id = p_match and event_id = k.event_id;
+  if m.id is null then raise exception 'Match not found'; end if;
+  if m.status = 'final' then raise exception 'This match is already final.'; end if;
+  if k.team_id::text not in (coalesce(_match_team(m.id, 'a'), '-'), coalesce(_match_team(m.id, 'b'), '-')) then raise exception 'Your team is not in this match.'; end if;
+  return m;
+end $$;
+
+create or replace function public.captain_checkin(p_key text, p_match uuid, p_ready boolean)
+returns void language plpgsql security definer set search_path = public as $$
+declare k event_team_keys; m event_matches;
+begin
+  k := _captain(p_key); m := _captain_match(k, p_match);
+  update event_matches set checkin = case when p_ready then checkin || jsonb_build_object(k.team_id::text, now()) else checkin - k.team_id::text end,
+    updated_at = now() where id = m.id;
+  perform _log(k.event_id, m.id, k.team_id, case when p_ready then 'Checked in' else 'Undid check-in' end || coalesce(' for match ' || m.match_no, ''));
+end $$;
+
+-- p_games: [{ "game_no": 1, "us": 250, "them": 201 }, ...] (from the captain's side)
+create or replace function public.captain_report(p_key text, p_match uuid, p_games jsonb)
+returns void language plpgsql security definer set search_path = public as $$
+declare k event_team_keys; m event_matches; t text;
+begin
+  k := _captain(p_key); m := _captain_match(k, p_match); t := k.team_id::text;
+  if jsonb_typeof(p_games) <> 'array' or jsonb_array_length(p_games) > 9 then raise exception 'Bad report'; end if;
+  update event_matches set reports = reports || jsonb_build_object(t, coalesce(reports -> t, '{}'::jsonb) || jsonb_build_object('games', p_games, 'at', now())),
+    updated_at = now() where id = m.id;
+  perform _log(k.event_id, m.id, k.team_id, 'Reported a score' || coalesce(' for match ' || m.match_no, '') || ': ' ||
+    coalesce((select string_agg('map ' || (g->>'game_no') || ' ' || coalesce(g->>'us', '?') || '–' || coalesce(g->>'them', '?'), ', ') from jsonb_array_elements(p_games) g), 'no maps'));
+end $$;
+
+-- Scoreboard photos from captains. Captains don't sign in, so they can't write to Storage;
+-- a small JPEG goes through this checked function instead. Staff read them, then they move into
+-- the match's screenshots (Storage) when the result is approved.
+create table if not exists public.event_report_shots (
+  id         uuid primary key default gen_random_uuid(),
+  event_id   uuid not null references public.events(id) on delete cascade,
+  match_id   uuid not null references public.event_matches(id) on delete cascade,
+  team_id    uuid not null references public.event_teams(id) on delete cascade,
+  game_no    int not null,
+  image      text not null,            -- data:image/jpeg;base64,…
+  created_at timestamptz not null default now()
+);
+create index if not exists ev_report_shots_idx on public.event_report_shots(match_id);
+alter table public.event_report_shots enable row level security;
+drop policy if exists event_report_shots_all on public.event_report_shots;
+create policy event_report_shots_all on public.event_report_shots for all using (is_event_admin(event_id)) with check (is_event_admin(event_id));
+
+create or replace function public.captain_shot(p_key text, p_match uuid, p_game int, p_image text)
+returns uuid language plpgsql security definer set search_path = public as $$
+declare k event_team_keys; m event_matches; t text; new_id uuid;
+begin
+  k := _captain(p_key); t := k.team_id::text;
+  -- photos are welcome after the match is over too (the last map's tap closes it)
+  select * into m from event_matches where id = p_match and event_id = k.event_id;
+  if m.id is null then raise exception 'Match not found'; end if;
+  if t not in (coalesce(_match_team(m.id, 'a'), '-'), coalesce(_match_team(m.id, 'b'), '-')) then raise exception 'Your team is not in this match.'; end if;
+  if m.status = 'final' and m.ended_at < now() - interval '3 hours' then raise exception 'This match ended a while ago — ask staff.'; end if;
+  if p_game is null or p_game < 1 or p_game > 9 then raise exception 'Pick a map'; end if;
+  if p_image not like 'data:image/jpeg;base64,%' then raise exception 'Send a photo'; end if;
+  if length(p_image) > 1200000 then raise exception 'That photo is too large'; end if;
+  if (select count(*) from event_report_shots where match_id = m.id and team_id = k.team_id) >= 12 then
+    raise exception 'Photo limit reached for this match — ask staff'; end if;
+  insert into event_report_shots(event_id, match_id, team_id, game_no, image) values (k.event_id, m.id, k.team_id, p_game, p_image) returning id into new_id;
+  update event_matches set reports = reports || jsonb_build_object(t, coalesce(reports -> t, '{}'::jsonb)
+      || jsonb_build_object('shots', coalesce(reports -> t -> 'shots', '[]'::jsonb) || to_jsonb(p_game), 'at', now())),
+    updated_at = now() where id = m.id;
+  perform _log(k.event_id, m.id, k.team_id, 'Sent a scoreboard photo of map ' || p_game || coalesce(' (match ' || m.match_no || ')', ''));
+  return new_id;
+end $$;
+grant execute on function public.captain_shot(text, uuid, int, text) to anon, authenticated;
+
+create or replace function public.captain_help(p_key text, p_note text)
+returns void language plpgsql security definer set search_path = public as $$
+declare k event_team_keys;
+begin
+  k := _captain(p_key);
+  update event_teams set help = case when p_note is null then null else jsonb_build_object('at', now(), 'note', left(p_note, 140)) end
+  where id = k.team_id;
+  perform _log(k.event_id, null, k.team_id, case when p_note is null then 'Cancelled the staff call' else 'Called staff: ' || left(p_note, 140) end);
+end $$;
+
+-- captains fix their gamertags (same number of rows or more; extra rows are removed)
+create or replace function public.captain_roster(p_key text, p_names text[])
+returns void language plpgsql security definer set search_path = public as $$
+declare k event_team_keys; ids uuid[]; i int; n text;
+begin
+  k := _captain(p_key);
+  if coalesce(array_length(p_names, 1), 0) > 8 then raise exception 'At most 8 players'; end if;
+  ids := array(select id from event_players where team_id = k.team_id order by gamertag);
+  for i in 1..coalesce(array_length(p_names, 1), 0) loop
+    n := left(trim(p_names[i]), 32);
+    continue when n = '';
+    if i <= coalesce(array_length(ids, 1), 0) then update event_players set gamertag = n where id = ids[i];
+    else insert into event_players(event_id, team_id, gamertag) values (k.event_id, k.team_id, n); end if;
+  end loop;
+  delete from event_players where team_id = k.team_id and id = any(ids[coalesce(array_length(p_names, 1), 0) + 1:]);
+  perform _log(k.event_id, null, k.team_id, 'Updated the roster: ' || array_to_string(p_names, ', '));
+end $$;
+
+-- ---------- map winners from captains: one tap per map, counts right away ----------
+alter table public.event_games add column if not exists win_by uuid;     -- team whose captain tapped the winner
+alter table public.event_games add column if not exists win_check text check (win_check in ('ok', 'disputed'));  -- the other captain's answer
+alter table public.event_games add column if not exists win_at timestamptz;
+
+-- a map's winner: the score when both are entered, else the tapped winner (same as gameWinner() in js/event-logic.js)
+create or replace function public._game_winner(g public.event_games) returns text language sql immutable as $$
+  select case when g.a_score is not null and g.b_score is not null and g.a_score <> g.b_score
+              then case when g.a_score > g.b_score then 'a' else 'b' end else g.winner end $$;
+
+-- maps won per side and the series winner (same as seriesResult())
+create or replace function public._series(p_match uuid, out a int, out b int, out winner text)
+language plpgsql stable security definer set search_path = public as $$
+declare m event_matches; need int;
+begin
+  select * into m from event_matches where id = p_match;
+  select count(*) filter (where _game_winner(g) = 'a'), count(*) filter (where _game_winner(g) = 'b') into a, b
+  from event_games g where g.match_id = p_match;
+  need := coalesce(m.best_of, 5) / 2 + 1;
+  winner := case when a >= need then 'a' when b >= need then 'b'
+                 when m.status = 'final' and a <> b then case when a > b then 'a' else 'b' end end;
+end $$;
+
+-- the team in one slot of a match ('a' / 'b'): set directly for groups; for the bracket, from the seeds
+-- or the winner / loser of the match it comes from (same as resolveMatches()). Returns a team id, 'BYE' or null.
+create or replace function public._match_team(p_match uuid, p_side text, p_depth int default 0)
+returns text language plpgsql stable security definer set search_path = public as $$
+declare m event_matches; f event_matches; src text; kind text; ref text; fa text; fb text; sr record; w text; l text; seeds jsonb;
+begin
+  if p_depth > 24 then return null; end if;
+  select * into m from event_matches where id = p_match;
+  if m.id is null then return null; end if;
+  if p_side = 'a' and m.team_a is not null then return m.team_a::text; end if;
+  if p_side = 'b' and m.team_b is not null then return m.team_b::text; end if;
+  src := case p_side when 'a' then m.src_a else m.src_b end;
+  if src is null then return null; end if;
+  kind := split_part(src, ':', 1); ref := split_part(src, ':', 2);
+  if kind = 'S' then
+    select settings -> 'seeds' into seeds from events where id = m.event_id;
+    if seeds is null or jsonb_typeof(seeds) <> 'array' then return null; end if;
+    if ref::int > jsonb_array_length(seeds) then return 'BYE'; end if;
+    return seeds ->> (ref::int - 1);
+  end if;
+  select * into f from event_matches where event_id = m.event_id and code = ref;
+  if f.id is null then return null; end if;
+  fa := _match_team(f.id, 'a', p_depth + 1); fb := _match_team(f.id, 'b', p_depth + 1);
+  if fa = 'BYE' and fb = 'BYE' then w := 'BYE'; l := 'BYE';
+  elsif fa = 'BYE' and fb is not null then w := fb; l := 'BYE';
+  elsif fb = 'BYE' and fa is not null then w := fa; l := 'BYE';
+  elsif fa is not null and fb is not null then
+    sr := _series(f.id);
+    if sr.winner = 'a' then w := fa; l := fb; elsif sr.winner = 'b' then w := fb; l := fa; end if;
+  end if;
+  return case kind when 'W' then w when 'L' then l end;
+end $$;
+
+-- "We won map 2" / "They won map 2". Only the next map can be reported; the series, groups and bracket update at once.
+create or replace function public.captain_map_won(p_key text, p_match uuid, p_game int, p_we_won boolean)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare k event_team_keys; m event_matches; side text; w text; decided int; gid uuid; need int; s record; wtag text;
+begin
+  k := _captain(p_key);
+  select * into m from event_matches where id = p_match and event_id = k.event_id for update;
+  if m.id is null then raise exception 'Match not found'; end if;
+  if m.status = 'final' then raise exception 'This match is already over.'; end if;
+  side := case k.team_id::text when _match_team(m.id, 'a') then 'a' when _match_team(m.id, 'b') then 'b' end;
+  if side is null then raise exception 'Your team is not in this match.'; end if;
+  need := coalesce(m.best_of, 5) / 2 + 1;
+  s := _series(m.id);
+  if s.a >= need or s.b >= need then raise exception 'The series is already decided.'; end if;
+  select count(*) into decided from event_games g where g.match_id = m.id and _game_winner(g) is not null;
+  if p_game <= decided then raise exception 'Map % was already reported. Refresh the page.', p_game; end if;
+  if p_game > decided + 1 then raise exception 'Report map % first.', decided + 1; end if;
+  w := case when p_we_won then side when side = 'a' then 'b' else 'a' end;
+  update event_games set winner = w, win_by = k.team_id, win_check = null, win_at = now()
+    where match_id = m.id and game_no = p_game returning id into gid;
+  if gid is null then
+    insert into event_games(event_id, match_id, game_no, winner, win_by, win_at) values (m.event_id, m.id, p_game, w, k.team_id, now());
+  end if;
+  s := _series(m.id);
+  if s.a >= need or s.b >= need then
+    update event_matches set status = 'final', live = null, started_at = coalesce(started_at, now()), ended_at = now(), updated_at = now() where id = m.id;
+  else
+    update event_matches set status = 'live', live = jsonb_build_object('game_no', p_game + 1), started_at = coalesce(started_at, now()), updated_at = now() where id = m.id;
+  end if;
+  select coalesce(nullif(tag, ''), name) into wtag from event_teams where id::text = _match_team(m.id, w);
+  perform _log(k.event_id, m.id, k.team_id, 'Map ' || p_game || ' won by ' || coalesce(wtag, '?') || ' · series ' || s.a || '–' || s.b
+    || case when s.a >= need or s.b >= need then ' (final)' else '' end);
+  return jsonb_build_object('a', s.a, 'b', s.b, 'done', s.a >= need or s.b >= need);
+end $$;
+
+-- the other captain confirms or disputes a tapped map winner (disputes go to staff; nothing changes until they decide)
+create or replace function public.captain_map_check(p_key text, p_match uuid, p_game int, p_ok boolean)
+returns void language plpgsql security definer set search_path = public as $$
+declare k event_team_keys; m event_matches; g event_games;
+begin
+  k := _captain(p_key);
+  select * into m from event_matches where id = p_match and event_id = k.event_id;
+  if m.id is null then raise exception 'Match not found'; end if;
+  if k.team_id::text not in (coalesce(_match_team(m.id, 'a'), '-'), coalesce(_match_team(m.id, 'b'), '-')) then raise exception 'Your team is not in this match.'; end if;
+  select * into g from event_games where match_id = m.id and game_no = p_game;
+  if g.id is null or g.win_by is null then raise exception 'Nothing to check for that map.'; end if;
+  if g.win_by = k.team_id then raise exception 'The other team checks this one.'; end if;
+  if g.win_check is not null then raise exception 'Already answered.'; end if;
+  update event_games set win_check = case when p_ok then 'ok' else 'disputed' end where id = g.id;
+  perform _log(k.event_id, m.id, k.team_id, case when p_ok then 'Confirmed' else 'Disputed' end || ' the map ' || p_game || ' result');
+end $$;
+
+grant execute on function public.captain_map_won(text, uuid, int, boolean) to anon, authenticated;
+grant execute on function public.captain_map_check(text, uuid, int, boolean) to anon, authenticated;
+revoke execute on function public._match_team(uuid, text, int) from public, anon, authenticated;
+revoke execute on function public._series(uuid) from public, anon, authenticated;
+
+grant execute on function public.captain_team(uuid, text) to anon, authenticated;
+grant execute on function public.captain_checkin(text, uuid, boolean) to anon, authenticated;
+grant execute on function public.captain_report(text, uuid, jsonb) to anon, authenticated;
+grant execute on function public.captain_help(text, text) to anon, authenticated;
+grant execute on function public.captain_roster(text, text[]) to anon, authenticated;
+revoke execute on function public._captain(text) from public, anon, authenticated;
+revoke execute on function public._captain_match(event_team_keys, uuid) from public, anon, authenticated;
+
 create or replace function public.veto_whoami(p_veto uuid, p_key text)
 returns text language sql security definer stable set search_path = public as $$
-  select case when p_key = key_a then 'a' when p_key = key_b then 'b' end
-  from event_veto_keys where veto_id = p_veto;
+  select case when p_key = k.key_a or exists (select 1 from event_team_keys t where t.team_id = v.team_a and t.captain_key = p_key) then 'a'
+              when p_key = k.key_b or exists (select 1 from event_team_keys t where t.team_id = v.team_b and t.captain_key = p_key) then 'b' end
+  from event_vetoes v left join event_veto_keys k on k.veto_id = v.id where v.id = p_veto;
 $$;
 
 -- One captain action. Mirrors applyVeto() in js/veto.js.
 create or replace function public.veto_act(p_veto uuid, p_key text, p_choice text)
 returns public.event_vetoes language plpgsql security definer set search_path = public as $$
 declare
-  v event_vetoes; k event_veto_keys; side text; idx int; st jsonb; used text[]; remaining text[]; a jsonb; g int;
+  v event_vetoes; k event_veto_keys; side text; idx int; st jsonb; used text[]; remaining text[]; a jsonb; g int; st_kind text; st_mode text;
 begin
   select * into v from event_vetoes where id = p_veto for update;
   if v.id is null then raise exception 'Veto not found'; end if;
   select * into k from event_veto_keys where veto_id = p_veto;
-  if p_key = k.key_a then side := 'a'; elsif p_key = k.key_b then side := 'b';
+  -- a veto link, or the team's captain link
+  if p_key = k.key_a or exists (select 1 from event_team_keys t where t.team_id = v.team_a and t.captain_key = p_key) then side := 'a';
+  elsif p_key = k.key_b or exists (select 1 from event_team_keys t where t.team_id = v.team_b and t.captain_key = p_key) then side := 'b';
   else raise exception 'This captain link is not valid'; end if;
 
   idx := jsonb_array_length(v.actions);
   st := v.steps -> idx;
   if st is null then raise exception 'The veto is already finished.'; end if;
   if st->>'team' is distinct from side then raise exception 'It is not your turn.'; end if;
+  st_kind := st->>'kind'; st_mode := st->>'mode';
 
   if st->>'kind' = 'side' then
     if not (st->'options') ? p_choice then raise exception 'Pick one of the listed sides.'; end if;
@@ -599,6 +906,8 @@ begin
   end if;
 
   update event_vetoes set actions = v.actions, status = v.status, updated_at = now() where id = v.id returning * into v;
+  perform _log(v.event_id, v.match_id, case side when 'a' then v.team_a else v.team_b end,
+    'Veto: ' || case when st_kind = 'side' then 'picked side ' else st_kind || ' ' end || p_choice || ' (' || st_mode || ')');
   return v;
 end $$;
 

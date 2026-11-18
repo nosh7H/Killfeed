@@ -1,7 +1,7 @@
 import { h, clear, toast, modal, uid, fmtTime, parseTime, compressImage } from '../ui.js';
 import { state, teamPath, go, canEdit, isOwner, refreshData, knownMaps, knownModes } from '../state.js';
 import { MATCH_TYPES, STAT_FIELDS, fieldsForMode, MAX_SCREENSHOT_PX, SCREENSHOT_QUALITY } from '../config.js';
-import { parseScoreboard, applyMapping } from '../ocr-parse.js';
+import { parseScoreboard, applyMapping, pickMapScore, teamSide } from '../ocr-parse.js';
 
 const CDL_BO5 = ['Hardpoint', 'Search & Destroy', 'Hijack', 'Hardpoint', 'Search & Destroy'];
 const STAT_KEYS = STAT_FIELDS.map(f => f.key);
@@ -93,6 +93,10 @@ export async function editorView(matchId) {
       ondrop: e => { e.preventDefault(); addFiles(g, e.dataTransfer.files); render(); },
     }, h('input', { type: 'file', accept: 'image/*', multiple: true, hidden: true, onchange: e => { addFiles(g, e.target.files); render(); } }),
     h('strong', {}, 'Add scoreboard screenshots'), h('span', { class: 'muted small' }, 'Drop, click to browse, or paste with Ctrl+V'));
+    // phones: open the camera straight away
+    const cam = h('label', { class: 'dropzone cam' },
+      h('input', { type: 'file', accept: 'image/*', capture: 'environment', hidden: true, onchange: e => { addFiles(g, e.target.files); render(); } }),
+      h('strong', {}, '📷 Add photo'), h('span', { class: 'muted small' }, 'Take a picture of the screen'));
 
     return h('div', { class: `card game-card ${activeGame === i ? 'active' : ''}`, onfocusin: () => { activeGame = i; }, onclick: () => { activeGame = i; } },
       h('div', { class: 'game-head' },
@@ -111,7 +115,7 @@ export async function editorView(matchId) {
       h('div', { class: 'shots' },
         g.media.filter(m => !g.removedMedia.includes(m.id)).map(m => thumb(g, { media: m })),
         g.pending.map(p => thumb(g, { pending: p })),
-        drop),
+        h('div', { class: 'drop-pair' }, drop, cam)),
       statsTable(g));
   }
 
@@ -126,7 +130,7 @@ export async function editorView(matchId) {
             const blob = pending ? pending.file : await (await fetch(img.src)).blob();
             runOcr(g, blob, img.src);
           },
-        }, 'Read stats'),
+        }, 'Read score + stats'),
         h('button', {
           class: 'icon-btn', 'aria-label': 'Remove screenshot', onclick: () => {
             if (pending) g.pending = g.pending.filter(p => p !== pending);
@@ -158,17 +162,43 @@ export async function editorView(matchId) {
     const bar = h('div', { class: 'progress' }, h('div', { class: 'progress-fill' }));
     const label = h('p', { class: 'muted' }, 'Loading OCR engine…');
     const body = h('div', { class: 'ocr' }, label, bar);
-    const done = modal('Read stats from screenshot', body, []);
-    let text;
+    const done = modal('Read score and stats from screenshot', body, []);
+    let text, scorePasses;
     try {
-      const { recognize } = await import('../ocr.js');
-      text = await recognize(blob, (p, msg) => { bar.firstChild.style.width = `${Math.round(p * 100)}%`; label.textContent = msg; });
+      const { readScoreboard } = await import('../ocr.js');
+      ({ text, scorePasses } = await readScoreboard(blob, (p, msg) => { bar.firstChild.style.width = `${Math.round(p * 100)}%`; label.textContent = msg; }));
     } catch (e) {
       clear(body).append(h('p', {}, e.message));
       return;
     }
     const allRoster = state.data.players;
     let rows = parseScoreboard(text, allRoster);
+    // map score: left/top belongs to whichever side our players are on
+    const found = pickMapScore(scorePasses, g.mode);
+    const side = teamSide(rows, p => !!p.id);
+    const sc = found ? { use: true, us: side === 'right' ? found.right : found.left, them: side === 'right' ? found.left : found.right, guessed: !side } : null;
+    const scoreBox = h('div', { class: 'ocr-score' });
+    const drawScore = () => clear(scoreBox).append(...(sc ? [
+      h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: sc.use, onchange: e => { sc.use = e.target.checked; } }), h('strong', {}, 'Map score')),
+      h('span', { class: 'ocr-score-line' }, 'Us', h('input', { type: 'number', min: 0, class: 'in-score', value: sc.us, oninput: e => { sc.us = +e.target.value; } }), '–',
+        h('input', { type: 'number', min: 0, class: 'in-score', value: sc.them, oninput: e => { sc.them = +e.target.value; } }), 'Them'),
+      h('button', { class: 'btn btn-sm btn-ghost', onclick: () => { [sc.us, sc.them] = [sc.them, sc.us]; drawScore(); } }, '⇄ Swap'),
+      found.adjusted ? h('span', { class: 'small warn-text' }, 'Read as a 2x0 number and set to 250 (Hardpoint ends at 250). Check the image.')
+        : sc.guessed ? h('span', { class: 'small muted' }, 'Couldn’t tell which side you’re on — check it.')
+          : !found.sure ? h('span', { class: 'small muted' }, 'Check this against the image.') : null,
+    ] : [h('span', { class: 'small muted' }, 'Couldn’t read the map score. Type it in on the map.')]));
+    drawScore();
+    if (!rows.length && sc) {
+      clear(body).append(h('div', { class: 'ocr-layout' }, h('img', { class: 'ocr-preview', src: previewUrl, alt: 'Screenshot' }),
+        h('div', {}, scoreBox, h('p', { class: 'small muted' }, 'No player rows recognised — only the score.'),
+          h('div', { class: 'modal-foot' }, h('button', {
+            class: 'btn btn-primary', onclick: () => {
+              if (sc.use) { g.team_score = sc.us; g.opp_score = sc.them; }
+              document.querySelector('.modal-overlay .modal-head .icon-btn')?.click(); render(); toast(`Score ${sc.us}–${sc.them} filled — check before saving`, 'success');
+            },
+          }, 'Fill score')))));
+      await done; return;
+    }
     if (!rows.length) {
       clear(body).append(h('p', {}, 'No scoreboard rows were recognised. Try a sharper, full-resolution screenshot of the scoreboard, or enter the numbers manually.'),
         h('details', {}, h('summary', {}, 'Show raw text'), h('pre', {}, text)));
@@ -186,6 +216,7 @@ export async function editorView(matchId) {
         h('div', { class: 'ocr-layout' },
           h('img', { class: 'ocr-preview', src: previewUrl, alt: 'Screenshot' }),
           h('div', {},
+            scoreBox,
             h('p', { class: 'small' }, 'Check the rows, then tell us what each number column is (remembered for ', h('strong', {}, g.mode || 'this mode'), '). Rows matched to your roster are ticked.'),
             h('div', { class: 'table-wrap' }, h('table', { class: 'data ocr-table' },
               h('thead', {}, h('tr', {}, h('th', {}, ''), h('th', {}, 'Player'),
@@ -204,7 +235,7 @@ export async function editorView(matchId) {
                 Array.from({ length: width }, (_, ci) => h('td', { class: 'num' }, r.numbers[ci]?.raw ?? '')))))),
             h('details', {}, h('summary', { class: 'small' }, 'Raw OCR text'), h('pre', {}, text)),
             h('div', { class: 'modal-foot' },
-              h('button', { class: 'btn btn-primary', onclick: apply }, 'Fill stats'))))));
+              h('button', { class: 'btn btn-primary', onclick: apply }, sc ? 'Fill score + stats' : 'Fill stats'))))));
     };
 
     const apply = () => {
@@ -220,9 +251,10 @@ export async function editorView(matchId) {
         for (const k of STAT_KEYS) if (c[k] != null) line[k] = c[k];
         filled++;
       }
+      if (sc?.use) { g.team_score = sc.us; g.opp_score = sc.them; }
       document.querySelector('.modal-overlay .modal-head .icon-btn')?.click();
       render();
-      toast(`Filled stats for ${filled} player${filled === 1 ? '' : 's'} — double-check before saving`, 'success');
+      toast(`${sc?.use ? `Score ${sc.us}–${sc.them} · ` : ''}Filled stats for ${filled} player${filled === 1 ? '' : 's'} — double-check before saving`, 'success');
     };
     renderGrid();
     await done;

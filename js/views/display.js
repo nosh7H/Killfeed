@@ -1,15 +1,15 @@
 // Venue TV / stream display. Full-screen scenes that rotate every N seconds and update live.
 // URL: #/display/<eventId>?t=20&scene=bracket&bg=transparent
 import { h, clear, fmtTime, fmtNum } from '../ui.js';
-import { ev, loadEvent, watchEvent, teamName, teamTag, bracketMatches, teamBadge, spotOf } from '../event-state.js';
-import { roundName, liveMap, gamesByMatch, seriesResult, categoryLeaders } from '../event-logic.js';
+import { ev, loadEvent, watchEvent, teamName, teamTag, bracketMatches, teamBadge, spotOf, reportTo, estText, finalDayRole, finalDayName } from '../event-state.js';
+import { roundName, liveMap, gamesByMatch, seriesResult, categoryLeaders, hasAdvanced, teamSession } from '../event-logic.js';
 import { allStandings, bracketView, leaderRows, teamRows, queueRows, awardsGrid } from './event-parts.js';
 import { applyAccent, applyFont } from '../theme.js';
 import { shortMode } from './event.js';
 import { vetoSeriesList, vetoBanner } from './veto.js';
 import { mapStates } from '../veto.js';
 
-const SCENE_TITLES = { live: 'Live now', groups: 'Group stage', teams: 'Team stats', bracket: 'Playoff bracket', 'bracket:upper': 'Upper bracket', 'bracket:lower': 'Lower bracket', queue: 'Live and up next', veto: 'Map veto', awards: 'Awards' };
+const SCENE_TITLES = { seating: 'Seating', live: 'Live now', groups: 'Group stage', teams: 'Team stats', bracket: 'Playoff bracket', 'bracket:upper': 'Upper bracket', 'bracket:lower': 'Lower bracket', queue: 'Live and up next', veto: 'Map veto', awards: 'Awards' };
 
 export async function displayView(eventId, params) {
   document.body.classList.add('display-mode');
@@ -49,7 +49,8 @@ export async function displayView(eventId, params) {
     const list = scenes();
     if (idx >= list.length) idx = 0;
     const sc = list[idx];
-    const title = sc.startsWith('kd:') ? `K/D leaders · ${sc.slice(3)}` : SCENE_TITLES[sc] || sc;
+    const curSes = ev.settings.seating.current && ev.settings.seating.sessions?.find(x => x.id === ev.settings.seating.current);
+    const title = sc.startsWith('kd:') ? `K/D leaders · ${sc.slice(3)}` : sc === 'seating' && bracketSeatingOn() ? 'Seating · Playoffs' : sc === 'seating' && curSes ? `Seating · ${curSes.name}` : SCENE_TITLES[sc] || sc;
     const d = ev.settings.display;
     const paused = d.paused && !params.get('scene');
     const tk = d.ticker !== false || sc === 'live' ? ticker() : null;
@@ -91,6 +92,7 @@ export async function displayView(eventId, params) {
     if (sc === 'teams') return teamsScene();
     if (sc === 'queue') return queueScene();
     if (sc === 'live') return liveScene();
+    if (sc === 'seating') return seatingScene();
     if (sc === 'veto') return vetoScene();
     if (sc === 'awards') return awardsGrid({ large: true });
     if (sc.startsWith('kd:')) return kdScene(sc.slice(3));
@@ -100,9 +102,12 @@ export async function displayView(eventId, params) {
   function kdScene(mode) {
     const rows = leaderRows(mode).slice(0, 10);
     const max = Math.max(...rows.map(r => r.kd), 1);
-    const extra = mode === 'Hardpoint' ? [['OBJ/MAP', r => fmtTime(r.objpg), r => r.objpg]]
-      : mode === 'Search & Destroy' ? [['PLANTS', r => r.plants, r => r.plants], ['DEFUSES', r => r.defuses, r => r.defuses], ['FB', r => r.first_bloods, r => r.first_bloods]]
-        : [['DMG/MAP', r => fmtNum(r.dmgpg), r => r.dmgpg]];
+    // caster-only columns appear once casted maps have them
+    const adv = hasAdvanced(ev.data.stats);
+    const dmg = ['DMG/MAP', r => (r.dmgpg == null ? '–' : fmtNum(r.dmgpg)), r => r.dmgpg];
+    const extra = mode === 'Hardpoint' ? [['HILL/MAP', r => fmtTime(r.objpg), r => r.objpg], ...(adv ? [dmg] : [])]
+      : mode === 'Search & Destroy' ? [['PLANTS', r => r.plants, r => r.plants], ['DEFUSES', r => r.defuses, r => r.defuses], ...(adv ? [['FB', r => r.first_bloods ?? '–', r => r.first_bloods]] : [])]
+        : adv ? [dmg] : [];
     const all = leaderRows(mode);
     const top = extra.map(([, , raw]) => Math.max(0, ...all.map(r => Number(raw(r)) || 0)));
     const kMax = Math.max(0, ...all.map(r => r.kills));
@@ -162,8 +167,75 @@ export async function displayView(eventId, params) {
         h('span', { class: 'd-q-station' }, spotOf(m)?.label || '—'),
         h('span', { class: 'd-q-teams' }, teamName(r.A), h('i', {}, 'vs'), teamName(r.B)),
         h('span', { class: 'd-q-round' }, roundName(m, bm)),
-        h('span', { class: 'd-q-status' }, { live: 'Live', ondeck: 'On deck', scheduled: 'Up next' }[m.status] || ''));
+        h('span', { class: 'd-q-status' }, m.status === 'scheduled' && estText(m) && estText(m) !== 'Now' ? estText(m) : { live: 'Live', ondeck: 'On deck', scheduled: 'Up next' }[m.status] || ''));
     }));
+  }
+
+  // ---------- Seating chart: which row each team sits at, per session ----------
+  // once the group stage is over and bracket matches are on rows, the seating screen shows the bracket rows
+  function bracketSeatingOn() {
+    const g = ev.data.matches.filter(m => m.stage === 'group');
+    return g.length > 0 && g.every(m => m.status === 'final' || ev.resolved.get(m.id)?.result?.done) && ev.data.matches.some(m => m.stage !== 'group' && (m.row_a != null || m.row_b != null || m.station) && m.status !== 'final');
+  }
+  function bracketSeating() {
+    const seat = ev.settings.seating;
+    const n = Math.max(1, seat.group_rows || 8);
+    const label = seat.label || 'Row';
+    const bm = ev.data.matches.filter(m => m.stage !== 'group');
+    const open = [...bm.filter(m => m.status === 'live'), ...queueRows(40).filter(m => m.stage !== 'group' && m.status !== 'live')];
+    // each row: the team sitting there now (live), else the next team due there
+    const at = new Map();
+    for (const m of open) {
+      const r = ev.resolved.get(m.id) || {};
+      [[m.row_a, r.A, r.B, m.row_b], [m.row_b, r.B, r.A, m.row_a]].forEach(([row, team, opp, oppRow]) => {
+        if (row == null || at.has(Number(row))) return;
+        at.set(Number(row), { m, team, opp, oppRow });
+      });
+    }
+    const tag = m => (m.status === 'live' ? h('em', { class: 'd-seat-live' }, 'Live') : h('em', { class: 'd-seat-next' }, m.status === 'ondeck' ? 'On deck' : 'Next'));
+    const half = Math.ceil(n / 2);
+    const col = (from, to) => h('div', { class: 'd-seat-col' },
+      h('div', { class: 'd-seat-rows', style: { '--n': half } }, Array.from({ length: to - from + 1 }, (_, i) => {
+        const row = from + i;
+        const x = at.get(row);
+        return h('div', { class: `d-seat-row ${x ? '' : 'is-empty'}` },
+          h('span', { class: 'd-seat-n' }, h('small', {}, label), row),
+          h('span', { class: 'd-seat-teams' }, x ? [
+            h('span', { class: 'd-seat-team' }, teamBadge(x.team, 'md'), h('span', { class: 'd-seat-name' }, teamName(x.team) || 'TBD'), tag(x.m)),
+            h('span', { class: 'd-seat-vs' }, `vs ${teamName(x.opp) || 'TBD'}${x.oppRow != null ? ` · ${label} ${x.oppRow}` : ''} · ${roundName(x.m, bm)}`),
+          ] : h('span', { class: 'd-seat-free' }, '—')));
+      })));
+    return h('div', { class: `d-seat ${n > 6 ? 'n2' : 'n1'}` }, n > 6 ? [col(1, half), col(half + 1, n)] : col(1, n));
+  }
+
+  function seatingScene() {
+    if (bracketSeatingOn()) return bracketSeating();
+    const seat = ev.settings.seating;
+    const n = Math.max(1, seat.group_rows || 8);
+    const label = seat.label || 'Row';
+    const planned = Object.keys(seat.plan || {}).length > 0;
+    let sessions = planned ? (seat.sessions || []) : [null];
+    if (planned && seat.current && sessions.some(x => x.id === seat.current)) sessions = sessions.filter(x => x.id === seat.current);
+    const liveTeams = new Set(ev.data.matches.filter(m => m.status === 'live' && m.stage === 'group').flatMap(m => [ev.resolved.get(m.id)?.A, ev.resolved.get(m.id)?.B]));
+    const gIdx = g => 'ABCDEFGH'.indexOf(g) % 8;
+    if (!ev.data.teams.some(t => t.row_no != null)) return h('div', { class: 'd-empty' }, 'Seating is posted soon');
+    const col = x => {
+      const mine = ev.data.teams.filter(t => !x || teamSession(t, seat)?.id === x.id);
+      const groups = [...new Set(mine.map(t => t.group_label).filter(Boolean))].sort();
+      return h('div', { class: 'd-seat-col' },
+        sessions.length > 1 || x ? h('div', { class: 'd-seat-head' }, h('b', {}, x ? x.name : 'Seating'), groups.length ? h('span', {}, `Group${groups.length > 1 ? 's' : ''} ${groups.join(' · ')}`) : null) : null,
+        h('div', { class: 'd-seat-rows', style: { '--n': n } }, Array.from({ length: n }, (_, i) => {
+          const row = i + 1;
+          const here = mine.filter(t => t.row_no === row);
+          return h('div', { class: `d-seat-row ${here.length ? '' : 'is-empty'}` },
+            h('span', { class: 'd-seat-n' }, h('small', {}, label), row),
+            h('span', { class: 'd-seat-teams' }, here.length ? here.map(t => h('span', { class: 'd-seat-team' },
+              teamBadge(t.id, sessions.length > 1 ? 'md' : 'lg'), h('span', { class: 'd-seat-name' }, t.name),
+              t.group_label ? h('i', { class: 'd-seat-g', style: { '--gc': `var(--g${gIdx(t.group_label)})` } }, t.group_label) : null,
+              liveTeams.has(t.id) ? h('em', { class: 'd-seat-live' }, 'Live') : null)) : h('span', { class: 'd-seat-free' }, '—')));
+        })));
+    };
+    return h('div', { class: `d-seat n${sessions.length}` }, sessions.map(col));
   }
 
   // ---------- Live scene: every live match with its running score, then who's up next ----------
@@ -179,16 +251,18 @@ export async function displayView(eventId, params) {
       const games = gbm.get(m.id) || [];
       const res = seriesResult(m, games);
       const lm = liveMap(m, games, ev.settings);
-      const lead = lm.a > lm.b ? 'a' : lm.b > lm.a ? 'b' : null;
+      // series map count (no running score during a map)
+      const lead = res.a > res.b ? 'a' : res.b > res.a ? 'b' : null;
       const side = (key, id) => h('div', { class: `d-lv-team ${lead === key ? 'lead' : lead ? 'trail' : ''}` },
         teamBadge(id, 'lg'),
         h('span', { class: 'd-lv-name' }, teamName(id)),
-        h('span', { class: 'd-lv-maps', 'aria-label': 'Maps won' }, res[key]),
-        h('span', { class: 'd-lv-pts' }, lm.started ? lm[key] : '–'));
-      return h('div', { class: 'd-lv-card' },
-        h('div', { class: 'd-lv-meta' }, h('span', { class: 'd-lv-live' }, h('i'), 'Live'), h('span', {}, spotOf(m)?.label || ''), h('span', { class: 'muted' }, roundName(m, bm))),
+        h('span', { class: 'd-lv-pts', 'aria-label': 'Maps won' }, res[key]));
+      const q = finalDayRole(m) === 'qualifies';
+      return h('div', { class: `d-lv-card ${q ? 'q-sun' : ''}` },
+        h('div', { class: 'd-lv-meta' }, h('span', { class: 'd-lv-live' }, h('i'), 'Live'), h('span', {}, spotOf(m)?.label || ''), h('span', { class: 'muted' }, roundName(m, bm)),
+          q ? h('span', { class: 'd-sun' }, `Winner → ${finalDayName()}`) : finalDayRole(m) === 'both' ? h('span', { class: 'd-sun' }, `Both → ${finalDayName()}`) : null),
         side('a', r.A), side('b', r.B),
-        h('div', { class: 'd-lv-map' }, h('b', {}, `Map ${lm.game_no}`), [lm.mode, lm.map].filter(Boolean).join(' · ') || '', h('span', { class: 'muted' }, ` · Bo${m.best_of}`)));
+        h('div', { class: 'd-lv-map' }, h('b', {}, `Map ${lm.game_no} in progress`), [lm.mode, lm.map].filter(Boolean).join(' · ') || '', h('span', { class: 'muted' }, ` · Bo${m.best_of}`)));
     };
     return h('div', { class: `d-live n${Math.min(live.length, 4)}` },
       live.length ? h('div', { class: 'd-lv-grid' }, live.slice(0, 4).map(card)) : null,
@@ -196,10 +270,10 @@ export async function displayView(eventId, params) {
         h('div', { class: 'd-lv-next-title' }, live.length ? 'Up next' : 'Next matches'),
         next.map(m => {
           const r = ev.resolved.get(m.id);
-          return h('div', { class: `d-lv-row q-${m.status}` },
-            h('span', { class: 'd-lv-status' }, m.status === 'ondeck' ? 'On deck' : 'Up next'),
+          return h('div', { class: `d-lv-row q-${m.status} ${finalDayRole(m) === 'qualifies' ? 'q-sun' : ''}` },
+            h('span', { class: 'd-lv-status' }, m.status === 'ondeck' ? 'On deck' : estText(m) && estText(m) !== 'Now' ? h('span', { class: 'd-est' }, estText(m)) : 'Up next'),
             h('span', { class: 'd-lv-vs' }, teamBadge(r.A, 'md'), teamName(r.A), h('i', {}, 'vs'), teamBadge(r.B, 'md'), teamName(r.B)),
-            h('span', { class: 'd-lv-where' }, spotOf(m) ? `Report to ${spotOf(m).label}` : roundName(m, bm)));
+            h('span', { class: 'd-lv-where' }, reportTo(m) || roundName(m, bm)));
         })) : null);
   }
 
@@ -217,11 +291,11 @@ export async function displayView(eventId, params) {
       const games = gbm.get(m.id) || [];
       const res = seriesResult(m, games);
       const lm = liveMap(m, games, ev.settings);
-      items.push({ k: `L${m.id}`, cls: 'live', label: 'Live', text: `${teamTag(r.A)} ${res.a}–${res.b} ${teamTag(r.B)}`, sub: lm.started ? `Map ${lm.game_no} ${lm.a}–${lm.b}` : `Map ${lm.game_no}` });
+      items.push({ k: `L${m.id}`, cls: 'live', label: 'Live', text: `${teamTag(r.A)} ${res.a}–${res.b} ${teamTag(r.B)}`, sub: `Map ${lm.game_no}${lm.mode ? ` · ${lm.mode === 'Search & Destroy' ? 'SnD' : lm.mode}` : ''}` });
     }
     for (const m of upcoming) {
       const r = ev.resolved.get(m.id);
-      items.push({ k: `U${m.id}`, cls: 'next', label: m.status === 'ondeck' ? 'On deck' : 'Up next', text: `${teamTag(r.A)} vs ${teamTag(r.B)}`, sub: spotOf(m)?.label || '' });
+      items.push({ k: `U${m.id}`, cls: 'next', label: m.status === 'ondeck' ? 'On deck' : 'Up next', text: `${teamTag(r.A)} vs ${teamTag(r.B)}`, sub: [reportTo(m, true), m.status === 'scheduled' && estText(m) && estText(m) !== 'Now' ? estText(m) : ''].filter(Boolean).join(' · ') });
     }
     if (ev.settings.display.leaders !== false) {
       for (const l of categoryLeaders(ev.data, ev.settings, ev.idx, Math.max(1, ev.settings.display.min_games || 1))) {

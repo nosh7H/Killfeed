@@ -45,14 +45,23 @@ export async function eventsView() {
       h('p', { class: 'muted small' }, 'Enter the admin code from the event owner to enter scores and run the queue.'),
       h('label', {}, 'Admin code', code),
       h('button', { class: 'btn', type: 'submit' }, 'Join as admin'))),
-    local ? h('div', { class: 'panel sample-card' },
-      h('div', {}, h('strong', {}, 'Want to see it in action?'), h('p', { class: 'muted small' }, 'Load a sample LAN with 8 teams, a finished group stage and playoffs under way. Then open its Display.')),
-      h('button', {
-        class: 'btn', onclick: async e => {
-          e.target.disabled = true;
-          const { loadSampleEvent } = await import('../sample-event.js');
-          const evt = await loadSampleEvent(state.store);
-          go(`#/e/${evt.id}`);
+    h('div', { class: 'panel sample-card' },
+      h('div', {}, h('strong', {}, 'Practice runs'),
+        h('p', { class: 'muted small' }, 'Load a made-up LAN with 16 teams and rosters already created, then run it like the real day: control panel, captain links, display. Delete it from Setup when you’re done.')),
+      h('div', { class: 'sample-opts' }, [
+        ['start', 'Start of event', 'Teams, groups, seating and captain links ready. Nothing played.'],
+        ['mid', 'Mid group stage', 'Morning session on its last round: live and on-deck matches.'],
+        ['playoffs', 'Playoffs under way', 'Groups done, bracket live with rows, reports and a staff call.'],
+      ].map(([stage, title, text]) => h('button', {
+        class: 'sample-opt', 'data-stage': stage, onclick: async e => {
+          const btn = e.currentTarget;
+          btn.disabled = true;
+          try {
+            const { loadSampleEvent } = await import('../sample-event.js');
+            const evt = await loadSampleEvent(state.store, 16, null, stage);
+            toast('Practice event ready', 'success');
+            go(`#/e/${evt.id}${stage === 'playoffs' ? '' : '/control'}`);
+          } catch (err) { btn.disabled = false; toast(err.message, 'error'); }
         },
-      }, 'Load sample event')) : null);
+      }, h('strong', {}, title), h('span', { class: 'muted small' }, text))))));
 }

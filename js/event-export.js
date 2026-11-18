@@ -26,18 +26,19 @@ export function eventCsvs(eventRow, data, resolved, standings, settings) {
     for (const s of idx.statsByGame.get(g.id) || []) {
       const mine = s.team_id === r.A ? 'a' : s.team_id === r.B ? 'b' : null;
       rows.push({
-        stage: g.match.stage, round: rname(g.match), match_code: g.match.code || '', map_no: g.game_no, map: g.map, mode: g.mode,
+        match_no: g.match.match_no ?? '', stage: g.match.stage, round: rname(g.match), match_code: g.match.code || '', map_no: g.game_no, map: g.map, mode: g.mode,
         team: tname(s.team_id), opponent: tname(mine === 'a' ? r.B : mine === 'b' ? r.A : null),
         team_score: mine === 'a' ? g.a_score : mine === 'b' ? g.b_score : '', opp_score: mine === 'a' ? g.b_score : mine === 'b' ? g.a_score : '',
         result: !w || !mine ? '' : w === mine ? 'W' : 'L',
         player: s.player_name, kills: s.kills, deaths: s.deaths, kd: r2((s.kills || 0) / Math.max(1, s.deaths || 0)),
         assists: s.assists ?? '', damage: s.damage ?? '', obj_seconds: s.obj_time ?? '', obj: mmss(s.obj_time),
         plants: s.plants ?? '', defuses: s.defuses ?? '', first_bloods: s.first_bloods ?? '', captures: s.captures ?? '',
+        casted: g.match.casted ? 'yes' : '', non_traded_kills: s.non_traded_kills ?? '', highest_streak: s.highest_streak ?? '', avg_hill_seconds: s.avg_hill_time ?? '', obj_kills: s.obj_kills ?? '', contested_seconds: s.contested_time ?? '',
       });
     }
   }
   const cols = keys => keys.map(k => ({ key: k, label: k }));
-  files['player_maps.csv'] = toCSV(rows, cols(['stage', 'round', 'match_code', 'map_no', 'map', 'mode', 'team', 'opponent', 'team_score', 'opp_score', 'result', 'player', 'kills', 'deaths', 'kd', 'assists', 'damage', 'obj_seconds', 'obj', 'plants', 'defuses', 'first_bloods', 'captures']));
+  files['player_maps.csv'] = toCSV(rows, cols(['match_no', 'stage', 'round', 'match_code', 'map_no', 'map', 'mode', 'team', 'opponent', 'team_score', 'opp_score', 'result', 'player', 'kills', 'deaths', 'kd', 'assists', 'damage', 'obj_seconds', 'obj', 'plants', 'defuses', 'first_bloods', 'captures', 'casted', 'non_traded_kills', 'highest_streak', 'avg_hill_seconds', 'obj_kills', 'contested_seconds']));
 
   // 2. player totals: all modes + one block per mode
   const totals = [];
@@ -61,31 +62,31 @@ export function eventCsvs(eventRow, data, resolved, standings, settings) {
 
   // 4. group standings
   const st = [];
-  for (const [g, list] of Object.entries(standings)) list.forEach((r, i) => st.push({ group: g, place: i + 1, team: r.team.name, series_w: r.sw, series_l: r.sl, maps_w: r.mw, maps_l: r.ml, map_diff: r.md, points_diff: r.pd }));
-  files['group_standings.csv'] = toCSV(st, cols(['group', 'place', 'team', 'series_w', 'series_l', 'maps_w', 'maps_l', 'map_diff', 'points_diff']));
+  for (const [g, list] of Object.entries(standings)) list.forEach((r, i) => st.push({ group: g, place: i + 1, team: r.team.name, series_w: r.sw, series_l: r.sl, maps_w: r.mw, maps_l: r.ml, map_diff: r.md, map_win_pct: r.mw + r.ml ? Math.round((r.mw / (r.mw + r.ml)) * 1000) / 10 : '', tiebreak_over_next: r.manual ? 'set by staff' : ({ record: '', h2h: 'head to head', maps: 'map win %', coin: 'coin flip', 'coin?': 'coin flip needed' }[r.tb] || ''), points_diff: r.pd }));
+  files['group_standings.csv'] = toCSV(st, cols(['group', 'place', 'team', 'series_w', 'series_l', 'maps_w', 'maps_l', 'map_diff', 'map_win_pct', 'tiebreak_over_next', 'points_diff']));
 
   // 5. matches (series)
   files['matches.csv'] = toCSV(data.matches.map(m => {
     const r = resolved.get(m.id) || {};
     const res = r.result || seriesResult(m, gbm.get(m.id) || []);
-    return { stage: m.stage, group: m.group_label || '', round: rname(m), code: m.code || '', team_a: tname(r.A), team_b: tname(r.B), maps_a: res.a, maps_b: res.b,
-      winner: tname(r.winner), best_of: m.best_of, status: m.status, pod: matchSpot(m, r, teamById, settings.seating?.label || 'Row')?.label || '' };
-  }).sort((a, b) => (a.stage === 'group' ? 0 : 1) - (b.stage === 'group' ? 0 : 1)), cols(['stage', 'group', 'round', 'code', 'team_a', 'team_b', 'maps_a', 'maps_b', 'winner', 'best_of', 'status', 'pod']));
+    return { match_no: m.match_no ?? '', stage: m.stage, group: m.group_label || '', round: rname(m), code: m.code || '', team_a: tname(r.A), team_b: tname(r.B), maps_a: res.a, maps_b: res.b,
+      winner: tname(r.winner), best_of: m.best_of, status: m.status, rows: matchSpot(m, r, teamById, settings.seating || 'Row')?.full || '' };
+  }).sort((a, b) => (Number(a.match_no) || 1e6) - (Number(b.match_no) || 1e6) || (a.stage === 'group' ? 0 : 1) - (b.stage === 'group' ? 0 : 1)), cols(['match_no', 'stage', 'group', 'round', 'code', 'team_a', 'team_b', 'maps_a', 'maps_b', 'winner', 'best_of', 'status', 'rows']));
 
   // 6. maps (every game)
   files['maps.csv'] = toCSV(idx.games.map(g => {
     const r = resolved.get(g.match_id) || {}; const w = gameWinner(g);
-    return { round: rname(g.match), code: g.match.code || '', map_no: g.game_no, map: g.map, mode: g.mode, team_a: tname(r.A), team_b: tname(r.B), score_a: g.a_score ?? '', score_b: g.b_score ?? '', winner: w === 'a' ? tname(r.A) : w === 'b' ? tname(r.B) : '' };
-  }), cols(['round', 'code', 'map_no', 'map', 'mode', 'team_a', 'team_b', 'score_a', 'score_b', 'winner']));
+    return { match_no: g.match.match_no ?? '', round: rname(g.match), code: g.match.code || '', map_no: g.game_no, map: g.map, mode: g.mode, team_a: tname(r.A), team_b: tname(r.B), score_a: g.a_score ?? '', score_b: g.b_score ?? '', winner: w === 'a' ? tname(r.A) : w === 'b' ? tname(r.B) : '' };
+  }), cols(['match_no', 'round', 'code', 'map_no', 'map', 'mode', 'team_a', 'team_b', 'score_a', 'score_b', 'winner']));
 
   // 7. vetoes
   const vrows = [];
   for (const v of data.vetoes || []) {
     const m = data.matches.find(x => x.id === v.match_id);
-    for (const a of v.actions) vrows.push({ round: m ? rname(m) : '', team_a: tname(v.team_a), team_b: tname(v.team_b), step: a.i + 1,
+    for (const a of v.actions) vrows.push({ match_no: m?.match_no ?? '', round: m ? rname(m) : '', team_a: tname(v.team_a), team_b: tname(v.team_b), step: a.i + 1,
       team: a.team ? tname(a.team === 'a' ? v.team_a : v.team_b) : 'auto', action: a.kind, mode: a.mode, choice: a.choice, map_no: a.slot ?? '', time: a.at || '' });
   }
-  files['vetoes.csv'] = toCSV(vrows, cols(['round', 'team_a', 'team_b', 'step', 'team', 'action', 'mode', 'choice', 'map_no', 'time']));
+  files['vetoes.csv'] = toCSV(vrows, cols(['match_no', 'round', 'team_a', 'team_b', 'step', 'team', 'action', 'mode', 'choice', 'map_no', 'time']));
 
   files['event_backup.json'] = JSON.stringify({ event, ...data }, null, 2);
   files['README.txt'] = [

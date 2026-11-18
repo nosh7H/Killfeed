@@ -1,6 +1,7 @@
 // Reusable event widgets — used by the event pages and (in large format) by the display screen.
 import { h, fmtTime, fmtNum } from '../ui.js';
-import { ev, bracketMatches, teamName, teamTag, eventPath, teamBadge, spotOf } from '../event-state.js';
+import { hasAdvanced } from '../event-logic.js';
+import { ev, bracketMatches, teamName, teamTag, eventPath, teamBadge, spotOf, matchNo, estText, finalDayRole, finalDayName } from '../event-state.js';
 import { roundName, playerBoard, teamBoard, queue, computeAwards } from '../event-logic.js';
 
 const STATUS_LABEL = { scheduled: 'Scheduled', ondeck: 'On deck', live: 'Live', final: 'Final' };
@@ -10,21 +11,22 @@ export function statusPill(status) {
 }
 
 // ---------- group standings ----------
+const TB = { h2h: 'H2H', maps: 'Map %', coin: 'Coin flip', 'coin?': 'Coin flip' };
 export function standingsTable(label, rows, { link = true } = {}) {
   const adv = ev.settings.advance === 'all' ? 0 : Number(ev.settings.advance) || 0;
   return h('div', { class: 'standings' },
-    h('div', { class: 'standings-head' }, h('span', { class: 'eyebrow' }, `Group ${label}`)),
+    h('div', { class: 'standings-head' }, h('span', { class: 'eyebrow' }, `Group ${label}`), rows.some(r => r.manual) ? h('span', { class: 'tb-chip', 'data-tip': 'Order set by tournament staff' }, 'Set by staff') : null),
     h('table', { class: 'data tight' },
       h('thead', {}, h('tr', {}, h('th', { class: 'num rank' }, '#'), h('th', {}, 'Team'),
         h('th', { class: 'num', 'data-tip': 'Series won–lost' }, 'Series'), h('th', { class: 'num', 'data-tip': 'Maps won–lost' }, 'Maps'),
-        h('th', { class: 'num', 'data-tip': 'Map difference' }, '+/-'))),
+        h('th', { class: 'num', 'data-tip': 'Map win percentage (3rd tiebreaker)' }, 'Map %'))),
       h('tbody', {}, rows.map((r, i) => h('tr', { class: i < adv ? 'qualifies' : '' },
         h('td', { class: 'num rank' }, i + 1),
         h('td', { class: 'team-cell' }, teamBadge(r.team.id), link ? h('a', { href: eventPath(`team/${r.team.id}`) }, r.team.name) : r.team.name,
-          null),
+          !r.manual && TB[r.tb] ? h('span', { class: `tb-chip ${r.tb === 'coin?' ? 'pending' : ''}`, 'data-tip': r.tb === 'coin?' ? `Tied with ${rows[i + 1]?.team.name || 'the next team'} on every rule: coin flip to come` : `Ahead of ${rows[i + 1]?.team.name || 'the next team'} on ${TB[r.tb].toLowerCase()}` }, TB[r.tb]) : null),
         h('td', { class: 'num' }, `${r.sw}–${r.sl}`),
         h('td', { class: 'num' }, `${r.mw}–${r.ml}`),
-        h('td', { class: 'num' }, r.md > 0 ? `+${r.md}` : r.md))))));
+        h('td', { class: 'num' }, r.mw + r.ml ? `${Math.round((r.mpct ?? r.mw / (r.mw + r.ml)) * 100)}%` : '–'))))));
 }
 
 export function allStandings(opts) {
@@ -52,11 +54,16 @@ function matchBox(m, { link = true } = {}) {
     return 'TBD';
   }
   const live = m.status === 'live';
+  const fdr = finalDayRole(m);
   const box = h(link && !ev.projected ? 'a' : 'div', {
-    class: `bm ${live ? 'live' : ''} ${r.winner && r.winner !== 'BYE' ? 'done' : ''}`,
+    class: `bm ${live ? 'live' : ''} ${r.winner && r.winner !== 'BYE' ? 'done' : ''} ${fdr === 'qualifies' && !r.winner ? 'q-sun' : ''}`,
     href: link && !ev.projected ? eventPath(`match/${m.id}`) : null,
   },
-  h('div', { class: 'bm-meta' }, h('span', {}, m.code), live ? statusPill('live') : spotOf(m) && m.status !== 'final' ? h('span', {}, spotOf(m).label) : null),
+  h('div', { class: 'bm-meta' }, h('span', { 'data-tip': matchNo(m) || null }, m.match_no ? `#${m.match_no} · ${m.code}` : m.code),
+    fdr === 'qualifies' ? h('span', { class: 'sun-chip bm-sun', 'data-tip': `The winner plays on ${finalDayName()}` }, r.winner && r.winner !== 'BYE' ? `${teamTag(r.winner)} → ${finalDayName().slice(0, 3)}` : `W → ${finalDayName().slice(0, 3)}`)
+      : fdr === 'both' ? h('span', { class: 'sun-chip', 'data-tip': `Both teams are through to ${finalDayName()}: winner to the winners final, loser to the losers quarterfinals` }, `Both → ${finalDayName().slice(0, 3)}`)
+        : fdr === 'final' ? h('span', { class: 'sun-chip quiet' }, finalDayName().slice(0, 3)) : null,
+    live ? statusPill('live') : spotOf(m) && m.status !== 'final' ? h('span', {}, spotOf(m).label) : null),
   side(r.A, r.result?.a, r.winner && r.winner === r.A, 'a'),
   side(r.B, r.result?.b, r.winner && r.winner === r.B, 'b'));
   return box;
@@ -96,20 +103,30 @@ export function queueList({ limit = 8, link = true } = {}) {
   if (!rows.length) return h('div', { class: 'empty-sm' }, 'No matches waiting.');
   return h('div', { class: 'queue' }, rows.map(m => {
     const r = ev.resolved.get(m.id);
-    return h(link ? 'a' : 'div', { class: `queue-row q-${m.status}`, href: link ? eventPath(`match/${m.id}`) : null },
+    const q = finalDayRole(m) === 'qualifies';
+    return h(link ? 'a' : 'div', { class: `queue-row q-${m.status} ${q ? 'q-sun' : ''}`, href: link ? eventPath(`match/${m.id}`) : null },
       h('span', { class: 'q-station' }, spotOf(m)?.label || '—'),
-      h('span', { class: 'q-teams' }, teamBadge(r.A, 'xs'), teamName(r.A), h('span', { class: 'vs' }, 'vs'), teamBadge(r.B, 'xs'), teamName(r.B)),
-      h('span', { class: 'q-round' }, roundName(m, ev.data.matches.filter(x => x.stage !== 'group'))),
+      h('span', { class: 'q-teams' }, teamBadge(r.A, 'xs'), teamName(r.A), h('span', { class: 'vs' }, 'vs'), teamBadge(r.B, 'xs'), teamName(r.B),
+        q ? h('span', { class: 'sun-chip', style: { marginLeft: '.4rem' } }, `Winner → ${finalDayName()}`)
+          : finalDayRole(m) === 'both' ? h('span', { class: 'sun-chip', style: { marginLeft: '.4rem' } }, `Both → ${finalDayName()}`) : null),
+      h('span', { class: 'q-round' }, m.match_no ? `#${m.match_no} · ` : '', roundName(m, ev.data.matches.filter(x => x.stage !== 'group'))),
+      m.status !== 'live' && estText(m) ? h('span', { class: 'est-chip' }, estText(m)) : null,
       statusPill(m.status));
   }));
 }
 
 // ---------- leaderboards ----------
+// Caster-only columns (damage, first bloods…) only show once some casted maps have them,
+// and they are averaged over casted maps only.
 export function modeColumns(mode) {
-  if (mode === 'Hardpoint') return [{ key: 'objpg', label: 'OBJ/G', tip: 'Hill time per Hardpoint map', fmt: fmtTime }];
+  const adv = hasAdvanced(ev.data.stats);
+  const dmg = { key: 'dmgpg', label: 'DMG/G', tip: 'Damage per casted map', fmt: v => (v == null ? '–' : fmtNum(v)) };
+  if (mode === 'Hardpoint') return [{ key: 'objpg', label: 'HILL/G', tip: 'Hill time per Hardpoint map', fmt: fmtTime },
+    ...(adv ? [{ key: 'contpg', label: 'CONT/G', tip: 'Contested hill time per casted map', fmt: v => (v == null ? '–' : fmtTime(v)) }, dmg] : [])];
   if (mode === 'Search & Destroy') return [
-    { key: 'plants', label: 'PL', tip: 'Plants' }, { key: 'defuses', label: 'DEF', tip: 'Defuses' }, { key: 'first_bloods', label: 'FB', tip: 'First bloods' }];
-  return [{ key: 'dmgpg', label: 'DMG/G', tip: 'Damage per map', fmt: v => fmtNum(v) }];
+    { key: 'plants', label: 'PL', tip: 'Plants' }, { key: 'defuses', label: 'DEF', tip: 'Defuses' },
+    ...(adv ? [{ key: 'first_bloods', label: 'FB', tip: 'First bloods (casted maps)', fmt: v => v ?? '–' }, dmg] : [])];
+  return adv ? [{ key: 'ntkpg', label: 'NTK/G', tip: 'Non-traded kills per casted map', fmt: v => (v == null ? '–' : fmtNum(v, 1)) }, dmg] : [];
 }
 
 export function leaderRows(mode, sortKey = 'kd', minGames = ev.settings.display.min_games) {

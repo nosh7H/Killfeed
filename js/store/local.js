@@ -1,12 +1,13 @@
 // Demo store: everything lives in this browser (IndexedDB). Same API as the cloud store.
 import { uid } from '../ui.js';
-import { DEFAULT_MODES } from '../config.js';
+import { DEFAULT_MODES, POOL_MAPS } from '../config.js';
 import { applyVeto } from '../veto.js';
+import { resolveMatches, seriesResult, gameWinner } from '../event-logic.js';
 
 const DB_NAME = 'killfeed-demo';
 const TABLES = ['teams', 'team_members', 'players', 'matches', 'games', 'stats', 'media', 'vod_marks', 'team_notes', 'game_breakdowns', 'schedule_events', 'player_timeoff',
-  'events', 'event_admins', 'event_teams', 'event_players', 'event_matches', 'event_games', 'event_stats', 'event_media', 'event_vetoes', 'event_veto_keys'];
-const EV_CHILD = ['event_teams', 'event_players', 'event_matches', 'event_games', 'event_stats', 'event_media', 'event_vetoes', 'event_veto_keys'];
+  'events', 'event_admins', 'event_teams', 'event_players', 'event_matches', 'event_games', 'event_stats', 'event_media', 'event_vetoes', 'event_veto_keys', 'event_team_keys', 'event_report_shots', 'event_log'];
+const EV_CHILD = ['event_teams', 'event_players', 'event_matches', 'event_games', 'event_stats', 'event_media', 'event_vetoes', 'event_veto_keys', 'event_team_keys', 'event_report_shots', 'event_log'];
 const LOCAL_USER = { id: 'local-user', email: 'demo@local' };
 
 function openDB() {
@@ -62,7 +63,7 @@ export class LocalStore {
   }
   async createTeam({ name, tag, display_name }) {
     const team = {
-      id: uid(), name, tag: tag || null, maps: [], modes: [...DEFAULT_MODES],
+      id: uid(), name, tag: tag || null, maps: [...POOL_MAPS], modes: [...DEFAULT_MODES],
       invite_code: Math.random().toString(36).slice(2, 10).toUpperCase(), created_by: LOCAL_USER.id, created_at: this.now(),
     };
     this.t.teams.push(team);
@@ -259,6 +260,14 @@ export class LocalStore {
   }
   async evUpsert(table, rows) {
     rows = [].concat(rows);
+    if (table === 'event_team_keys') { // keyed by team_id
+      for (const r of rows) {
+        const i = this.t.event_team_keys.findIndex(x => x.team_id === r.team_id);
+        if (i >= 0) this.t.event_team_keys[i] = { ...r }; else this.t.event_team_keys.push({ ...r });
+      }
+      await this.persist();
+      return rows;
+    }
     for (const r of rows) {
       if (!r.id) r.id = uid();
       const i = this.t[table].findIndex(x => x.id === r.id);
@@ -269,7 +278,7 @@ export class LocalStore {
   }
   async evDelete(table, ids) {
     ids = new Set([].concat(ids));
-    const cascade = { event_teams: [['event_players', 'team_id']], event_matches: [['event_games', 'match_id'], ['event_vetoes', 'match_id']], event_games: [['event_stats', 'game_id'], ['event_media', 'game_id']], event_vetoes: [['event_veto_keys', 'veto_id']] };
+    const cascade = { event_teams: [['event_players', 'team_id']], event_matches: [['event_games', 'match_id'], ['event_vetoes', 'match_id'], ['event_report_shots', 'match_id']], event_games: [['event_stats', 'game_id'], ['event_media', 'game_id']], event_vetoes: [['event_veto_keys', 'veto_id']] };
     const drop = (tb, set) => {
       const gone = this.t[tb].filter(r => set.has(r.id));
       this.t[tb] = this.t[tb].filter(r => !set.has(r.id));
@@ -277,6 +286,7 @@ export class LocalStore {
       return gone;
     };
     const gone = drop(table, ids);
+    if (table === 'event_teams') this.t.event_team_keys = this.t.event_team_keys.filter(k => !ids.has(k.team_id));
     if (table === 'event_media') for (const m of gone) await this.deleteBlob(m.path);
     await this.persist();
   }
@@ -294,16 +304,165 @@ export class LocalStore {
   async vetoKeys(id) { return this.t.event_veto_keys.find(k => k.veto_id === id) || null; }
   async vetoWhoami(id, key) {
     await this.reload();
-    const k = this.t.event_veto_keys.find(x => x.veto_id === id);
-    return !k || !key ? null : key === k.key_a ? 'a' : key === k.key_b ? 'b' : null;
+    if (!key) return null;
+    const v = this.t.event_vetoes.find(x => x.id === id);
+    const k = this.t.event_veto_keys.find(x => x.veto_id === id) || {};
+    const cap = this.t.event_team_keys.find(x => x.captain_key === key);
+    // a veto link, or the team's captain link
+    return key === k.key_a || (v && cap && cap.team_id === v.team_a) ? 'a' : key === k.key_b || (v && cap && cap.team_id === v.team_b) ? 'b' : null;
+  }
+
+  // ---- activity log (same as event_log in schema.sql) ----
+  async evLog(eventId, limit = 500) {
+    return this.t.event_log.filter(x => x.event_id === eventId).sort((a, b) => b.at.localeCompare(a.at)).slice(0, limit).map(x => ({ ...x }));
+  }
+  async evLogAdd(row) { this.t.event_log.push({ id: uid(), at: this.now(), ...row }); await this.persist(); }
+  async myEventName() { return 'You'; }
+  _capLog(k, matchId, summary) {
+    const t = this.t.event_teams.find(x => x.id === k.team_id);
+    this.t.event_log.push({ id: uid(), event_id: k.event_id, at: this.now(), match_id: matchId, actor: `Captain · ${t?.tag || t?.name || '?'}`, kind: 'captain', summary, group_id: uid() });
+  }
+
+  // ---- captains (same checks as the captain_* functions in schema.sql) ----
+  async teamKeys(eventId) { return this.t.event_team_keys.filter(k => k.event_id === eventId).map(k => ({ ...k })); }
+  async captainTeam(eventId, key) {
+    await this.reload();
+    return this.t.event_team_keys.find(k => k.event_id === eventId && k.captain_key === key)?.team_id || null;
+  }
+  async _cap(key, matchId) {
+    await this.reload();
+    const k = this.t.event_team_keys.find(x => x.captain_key === key);
+    if (!k) throw new Error('This captain link is not valid');
+    if (!matchId) return { k };
+    const m = this.t.event_matches.find(x => x.id === matchId && x.event_id === k.event_id);
+    if (!m) throw new Error('Match not found');
+    if (m.status === 'final') throw new Error('This match is already final.');
+    if (!this._side(k.event_id, m, k.team_id)) throw new Error('Your team is not in this match.');
+    return { k, m };
+  }
+  async captainCheckin(key, matchId, ready) {
+    const { k, m } = await this._cap(key, matchId);
+    const c = { ...(m.checkin || {}) };
+    if (ready) c[k.team_id] = this.now(); else delete c[k.team_id];
+    m.checkin = c; m.updated_at = this.now();
+    this._capLog(k, m.id, `${ready ? 'Checked in' : 'Undid check-in'}${m.match_no ? ` for match ${m.match_no}` : ''}`);
+    await this.persist();
+  }
+  async captainReport(key, matchId, games) {
+    const { k, m } = await this._cap(key, matchId);
+    m.reports = { ...(m.reports || {}), [k.team_id]: { ...(m.reports?.[k.team_id] || {}), games, at: this.now() } }; m.updated_at = this.now();
+    this._capLog(k, m.id, `Reported a score${m.match_no ? ` for match ${m.match_no}` : ''}: ${games.map(g => `map ${g.game_no} ${g.us ?? '?'}–${g.them ?? '?'}`).join(', ') || 'no maps'}`);
+    await this.persist();
+  }
+  // which side ('a' / 'b') a team plays in a match, bracket slots included (same as _match_team in schema.sql)
+  _side(eventId, m, teamId) {
+    const seeds = this.t.events.find(e => e.id === eventId)?.settings?.seeds || [];
+    const ms = this.t.event_matches.filter(x => x.event_id === eventId);
+    const r = resolveMatches(ms, this.t.event_games.filter(g => g.event_id === eventId), seeds).get(m.id) || {};
+    return r.A === teamId ? 'a' : r.B === teamId ? 'b' : null;
+  }
+  async captainMapWon(key, matchId, gameNo, weWon) {
+    await this.reload();
+    const k = this.t.event_team_keys.find(x => x.captain_key === key);
+    if (!k) throw new Error('This captain link is not valid');
+    const m = this.t.event_matches.find(x => x.id === matchId && x.event_id === k.event_id);
+    if (!m) throw new Error('Match not found');
+    if (m.status === 'final') throw new Error('This match is already over.');
+    const side = this._side(k.event_id, m, k.team_id);
+    if (!side) throw new Error('Your team is not in this match.');
+    const games = this.t.event_games.filter(g => g.match_id === m.id);
+    const need = Math.floor((m.best_of || 5) / 2) + 1;
+    let sr = seriesResult({ ...m, status: 'live' }, games);
+    if (sr.a >= need || sr.b >= need) throw new Error('The series is already decided.');
+    const decided = games.filter(g => gameWinner(g)).length;
+    if (gameNo <= decided) throw new Error(`Map ${gameNo} was already reported. Refresh the page.`);
+    if (gameNo > decided + 1) throw new Error(`Report map ${decided + 1} first.`);
+    const w = weWon ? side : side === 'a' ? 'b' : 'a';
+    let g = games.find(x => x.game_no === gameNo);
+    if (!g) { g = { id: uid(), event_id: m.event_id, match_id: m.id, game_no: gameNo, map: null, mode: null, a_score: null, b_score: null }; this.t.event_games.push(g); }
+    Object.assign(g, { winner: w, win_by: k.team_id, win_check: null, win_at: this.now() });
+    sr = seriesResult({ ...m, status: 'live' }, this.t.event_games.filter(x => x.match_id === m.id));
+    const done = sr.a >= need || sr.b >= need;
+    Object.assign(m, done
+      ? { status: 'final', live: null, started_at: m.started_at || this.now(), ended_at: this.now(), updated_at: this.now() }
+      : { status: 'live', live: { game_no: gameNo + 1 }, started_at: m.started_at || this.now(), updated_at: this.now() });
+    const seeds = this.t.events.find(e => e.id === k.event_id)?.settings?.seeds || [];
+    const r = resolveMatches(this.t.event_matches.filter(x => x.event_id === k.event_id), this.t.event_games.filter(x => x.event_id === k.event_id), seeds).get(m.id) || {};
+    const wt = this.t.event_teams.find(t => t.id === (w === 'a' ? r.A : r.B));
+    this._capLog(k, m.id, `Map ${gameNo} won by ${wt?.tag || wt?.name || '?'} · series ${sr.a}–${sr.b}${done ? ' (final)' : ''}`);
+    await this.persist();
+    this.listeners.forEach(fn => fn());
+    return { a: sr.a, b: sr.b, done };
+  }
+  async captainMapCheck(key, matchId, gameNo, ok) {
+    await this.reload();
+    const k = this.t.event_team_keys.find(x => x.captain_key === key);
+    if (!k) throw new Error('This captain link is not valid');
+    const m = this.t.event_matches.find(x => x.id === matchId && x.event_id === k.event_id);
+    if (!m) throw new Error('Match not found');
+    if (!this._side(k.event_id, m, k.team_id)) throw new Error('Your team is not in this match.');
+    const g = this.t.event_games.find(x => x.match_id === m.id && x.game_no === gameNo);
+    if (!g?.win_by) throw new Error('Nothing to check for that map.');
+    if (g.win_by === k.team_id) throw new Error('The other team checks this one.');
+    if (g.win_check) throw new Error('Already answered.');
+    g.win_check = ok ? 'ok' : 'disputed';
+    this._capLog(k, m.id, `${ok ? 'Confirmed' : 'Disputed'} the map ${gameNo} result`);
+    await this.persist();
+    this.listeners.forEach(fn => fn());
+  }
+  async captainShot(key, matchId, gameNo, image) {
+    await this.reload();
+    const k = this.t.event_team_keys.find(x => x.captain_key === key);
+    if (!k) throw new Error('This captain link is not valid');
+    const m = this.t.event_matches.find(x => x.id === matchId && x.event_id === k.event_id);
+    if (!m) throw new Error('Match not found');
+    if (!this._side(k.event_id, m, k.team_id)) throw new Error('Your team is not in this match.');
+    if (m.status === 'final' && m.ended_at && Date.now() - new Date(m.ended_at) > 3 * 3600e3) throw new Error('This match ended a while ago — ask staff.');
+    if (!(gameNo >= 1 && gameNo <= 9)) throw new Error('Pick a map');
+    if (!String(image).startsWith('data:image/jpeg;base64,')) throw new Error('Send a photo');
+    if (image.length > 1200000) throw new Error('That photo is too large');
+    if (this.t.event_report_shots.filter(x => x.match_id === m.id && x.team_id === k.team_id).length >= 12) throw new Error('Photo limit reached for this match — ask staff');
+    const row = { id: uid(), event_id: k.event_id, match_id: m.id, team_id: k.team_id, game_no: gameNo, image, created_at: this.now() };
+    this.t.event_report_shots.push(row);
+    const cur = m.reports?.[k.team_id] || {};
+    m.reports = { ...(m.reports || {}), [k.team_id]: { ...cur, shots: [...(cur.shots || []), gameNo], at: this.now() } };
+    m.updated_at = this.now();
+    this._capLog(k, m.id, `Sent a scoreboard photo of map ${gameNo}${m.match_no ? ` (match ${m.match_no})` : ''}`);
+    await this.persist();
+    return row.id;
+  }
+  async reportShots(matchId) { return this.t.event_report_shots.filter(x => x.match_id === matchId).map(x => ({ ...x })); }
+  async captainHelp(key, note) {
+    const { k } = await this._cap(key);
+    const t = this.t.event_teams.find(x => x.id === k.team_id);
+    t.help = note == null ? null : { at: this.now(), note: String(note).slice(0, 140) };
+    this._capLog(k, null, note == null ? 'Cancelled the staff call' : `Called staff: ${String(note).slice(0, 140)}`);
+    await this.persist();
+  }
+  async captainRoster(key, names) {
+    const { k } = await this._cap(key);
+    const mine = this.t.event_players.filter(p => p.team_id === k.team_id).sort((a, b) => a.gamertag.localeCompare(b.gamertag));
+    names.forEach((n, i) => {
+      n = String(n || '').trim().slice(0, 32);
+      if (!n) return;
+      if (mine[i]) mine[i].gamertag = n; else this.t.event_players.push({ id: uid(), event_id: k.event_id, team_id: k.team_id, gamertag: n });
+    });
+    const drop = new Set(mine.slice(names.length).map(p => p.id));
+    this.t.event_players = this.t.event_players.filter(p => !drop.has(p.id));
+    this._capLog(k, null, `Updated the roster: ${names.join(', ')}`);
+    await this.persist();
   }
   async vetoAct(id, key, choice) {
     await this.reload(); // another tab may have acted
     const side = await this.vetoWhoami(id, key);
     if (!side) throw new Error('This captain link is not valid');
     const i = this.t.event_vetoes.findIndex(x => x.id === id);
+    const step = this.t.event_vetoes[i].steps[this.t.event_vetoes[i].actions.length];
     const v = applyVeto(this.t.event_vetoes[i], side, choice);
     v.updated_at = this.now();
+    const capK = this.t.event_team_keys.find(x => x.captain_key === key);
+    const teamId = side === 'a' ? v.team_a : v.team_b;
+    this._capLog(capK || { event_id: v.event_id, team_id: teamId }, v.match_id, `Veto: ${step?.kind === 'side' ? 'picked side ' : `${step?.kind} `}${choice} (${step?.mode})`);
     this.t.event_vetoes[i] = v;
     if (v.status === 'done') {
       for (const a of v.actions.filter(x => x.kind === 'pick' || x.kind === 'decider')) {

@@ -4,7 +4,7 @@
 //   team   { id, name, tag, group_label, seed }
 //   match  { id, stage: 'group'|'upper'|'lower'|'grand', group_label, round, slot, code,
 //            team_a, team_b, src_a, src_b, best_of, status, station, queue_pos }
-//   game   { id, match_id, game_no, map, mode, a_score, b_score }
+//   game   { id, match_id, game_no, map, mode, a_score, b_score, winner }  (winner: 'a'|'b' when only the map result is known)
 //   stat   { id, game_id, team_id, player_id, player_name, kills, deaths, ... }
 
 export const GROUP_LABELS = 'ABCDEFGHIJKLMNOP'.split('');
@@ -53,9 +53,9 @@ export function gamesByMatch(games) {
 }
 
 export function gameWinner(g) {
-  if (g.a_score == null || g.b_score == null || g.a_score === '' || g.b_score === '') return null;
+  if (g.a_score == null || g.b_score == null || g.a_score === '' || g.b_score === '') return g.winner === 'a' || g.winner === 'b' ? g.winner : null;
   const a = Number(g.a_score), b = Number(g.b_score);
-  return a > b ? 'a' : b > a ? 'b' : null;
+  return a > b ? 'a' : b > a ? 'b' : (g.winner === 'a' || g.winner === 'b' ? g.winner : null);
 }
 
 /** Map count and winner of a series. A series is decided when someone reaches a majority
@@ -190,9 +190,92 @@ export function resolveMatches(matches, games, seeds = []) {
   return memo;
 }
 
+// ---------- match numbers ----------
+
+/** Give every match without a number the next one: group matches first (in queue order), then the bracket
+ *  (in bracket order). Numbers already given never change. Returns only the matches that got a new number. */
+export function numberMatches(matches) {
+  let next = Math.max(0, ...matches.map(m => Number(m.match_no) || 0));
+  const stageRank = { group: 0, upper: 1, lower: 2, grand: 3 };
+  const order = (a, b) => (a.stage === 'group') !== (b.stage === 'group')
+    ? (a.stage === 'group' ? -1 : 1)
+    : (a.queue_pos ?? 1e4) - (b.queue_pos ?? 1e4) || (a.round - b.round) || (stageRank[a.stage] - stageRank[b.stage]) || (a.slot - b.slot);
+  return matches.filter(m => !m.match_no).sort(order).map(m => ({ ...m, match_no: ++next }));
+}
+
 // ---------- standings ----------
 
-export function groupStandings(teams, matches, games) {
+// Tiebreakers, in order: a. series win–loss record, b. head-to-head result, c. map win percentage, d. coin flip.
+export const TIEBREAKERS = [
+  ['record', 'Series record'],
+  ['h2h', 'Head to head'],
+  ['maps', 'Map win %'],
+  ['coin', 'Coin flip'],
+];
+export const coinKey = ids => [...ids].sort().join(',');
+const seriesPct = r => ((r.sw || 0) + (r.sl || 0) ? (r.sw || 0) / ((r.sw || 0) + (r.sl || 0)) : 0);
+export const mapPct = r => ((r.mw || 0) + (r.ml || 0) ? (r.mw || 0) / ((r.mw || 0) + (r.ml || 0)) : 0);
+
+/**
+ * Order rows with the tiebreakers. Each row gets `tb`: the tiebreaker that put it above the next row
+ * ('record' | 'h2h' | 'maps' | 'coin' | 'coin?' when a coin flip is still needed), and `coin`: the key of
+ * its coin-flip group when it took (or still needs) one.
+ * h2h: Map "x|y" → series x won against y. coins: { key: [team ids in order] } — flips already done.
+ * final: false while the teams still have matches to play (no coin flip is asked for yet).
+ */
+export function tiebreakSort(rows, { h2h = new Map(), coins = {}, final = true } = {}) {
+  const val = {
+    record: r => seriesPct(r) * 1e6 + (r.sw || 0) * 1e3 - (r.sl || 0),
+    h2h: (r, tied) => tied.reduce((n, o) => n + (o === r ? 0 : h2h.get(`${r.team.id}|${o.team.id}`) || 0), 0),
+    maps: r => Math.round(mapPct(r) * 1e6),
+  };
+  const steps = ['record', 'h2h', 'maps'];
+  const run = (list, k) => {
+    if (list.length < 2) return list;
+    if (k === steps.length) {
+      const key = coinKey(list.map(r => r.team.id));
+      const done = coins[key];
+      const sorted = done?.length
+        ? [...list].sort((x, y) => done.indexOf(x.team.id) - done.indexOf(y.team.id))
+        : [...list].sort((x, y) => (x.team.seed ?? 99) - (y.team.seed ?? 99) || String(x.team.name || '').localeCompare(String(y.team.name || '')));
+      // a coin flip is only due once the tied teams have finished playing (until then: seed order, no flag)
+      if (done?.length || final) sorted.forEach((r, i) => { r.coin = key; if (i < sorted.length - 1) r.tb = done?.length ? 'coin' : 'coin?'; });
+      return sorted;
+    }
+    const f = val[steps[k]];
+    const scored = list.map(r => [r, f(r, list)]);
+    const levels = [...new Set(scored.map(x => x[1]))].sort((x, y) => y - x);
+    const out = [];
+    levels.forEach((lv, i) => {
+      const same = scored.filter(x => x[1] === lv).map(x => x[0]);
+      // a multi-way tie that was partly broken starts again from head to head for the teams still level
+      const part = run(same, same.length < list.length && k >= 1 ? 1 : k + 1);
+      if (i < levels.length - 1) part[part.length - 1].tb = steps[k];
+      out.push(...part);
+    });
+    return out;
+  };
+  rows.forEach(r => { delete r.tb; delete r.coin; });
+  const out = run(rows, 0);
+  if (out.length) delete out[out.length - 1].tb;
+  return out;
+}
+
+/** Head-to-head series wins: Map "x|y" → series x won against y (group stage). */
+export function headToHead(matches, games) {
+  const gbm = gamesByMatch(games);
+  const out = new Map();
+  for (const m of matches) {
+    if (m.stage !== 'group' || !m.team_a || !m.team_b) continue;
+    const r = seriesResult(m, gbm.get(m.id) || []);
+    if (!r.done) continue;
+    const [w, l] = r.winner === 'a' ? [m.team_a, m.team_b] : [m.team_b, m.team_a];
+    out.set(`${w}|${l}`, (out.get(`${w}|${l}`) || 0) + 1);
+  }
+  return out;
+}
+
+export function groupStandings(teams, matches, games, { coins = {} } = {}) {
   const gbm = gamesByMatch(games);
   const groups = {};
   for (const t of teams) {
@@ -215,10 +298,13 @@ export function groupStandings(teams, matches, games) {
       if (r.winner === 'a') { a.sw++; b.sl++; } else { b.sw++; a.sl++; }
     }
   }
+  const h2h = headToHead(matches, games);
   const out = {};
   for (const [label, rows] of Object.entries(groups).sort()) {
-    out[label] = [...rows.values()].map(r => ({ ...r, md: r.mw - r.ml, pd: r.pf - r.pa }))
-      .sort((x, y) => y.sw - x.sw || x.sl - y.sl || y.md - x.md || y.pd - x.pd || (x.team.seed ?? 99) - (y.team.seed ?? 99));
+    const list = [...rows.values()].map(r => ({ ...r, md: r.mw - r.ml, pd: r.pf - r.pa, mpct: mapPct(r) }));
+    const gm = matches.filter(m => m.stage === 'group' && m.group_label === label);
+    const final = gm.length > 0 && gm.every(m => m.status === 'final' || seriesResult(m, gbm.get(m.id) || []).done);
+    out[label] = tiebreakSort(list, { h2h, coins, final });
   }
   return out;
 }
@@ -230,22 +316,53 @@ export function groupCount(setting, teamCount) {
 }
 export const advanceCount = a => (a === 'all' || a == null ? Infinity : Number(a) || Infinity);
 
-/** Interleave group placings into a seed list: A1, B1, C1, …, A2, B2, … (top `advance` per group). */
-export function playoffSeeds(standings, advance) {
+/**
+ * The playoff seed list with the reason for each spot.
+ * method 'rank' (default): all group winners first, ranked against each other with the tiebreakers
+ * (series record → head to head → map win % → coin flip), then all runners-up the same way, and so on.
+ * method 'snake': A1, B1, C1, C2, B2, A2 … (no cross-group ranking).
+ * Returns [{ id, place, group, row, tb, coin }].
+ */
+export function seedTable(standings, advance, { method = 'rank', coins = {}, h2h = new Map(), final = true } = {}) {
   const labels = Object.keys(standings).sort();
-  const seeds = [];
+  const out = [];
   const deepest = Math.max(0, ...labels.map(l => standings[l].length));
   for (let p = 0; p < Math.min(advance, deepest); p++) {
-    // alternate group order each placing so A2 doesn't always sit next to A1's path
-    const ls = p % 2 ? [...labels].reverse() : labels;
-    for (const l of ls) if (standings[l][p]) seeds.push(standings[l][p].team.id);
+    const tier = labels.filter(l => standings[l][p]).map(l => ({ ...standings[l][p], group: l }));
+    let ordered;
+    if (method === 'snake') {
+      ordered = p % 2 ? [...tier].reverse() : tier;
+      ordered.forEach(r => { delete r.tb; delete r.coin; });
+    } else ordered = tiebreakSort(tier, { h2h, coins, final });
+    for (const r of ordered) out.push({ id: r.team.id, place: p + 1, group: r.group, row: r, tb: r.tb || null, coin: r.coin || null });
   }
-  return seeds;
+  return out;
 }
+export function playoffSeeds(standings, advance, opts) {
+  return seedTable(standings, advance, opts).map(x => x.id);
+}
+
+/** Coin flips that are still needed: [{ key, ids, where }] (groups, then seeding). */
+export function pendingCoins(standings, seeds = []) {
+  const out = new Map();
+  for (const [label, rows] of Object.entries(standings)) {
+    for (const r of rows) if (r.coin && rows.some(x => x.coin === r.coin && x.tb === 'coin?')) {
+      if (!out.has(r.coin)) out.set(r.coin, { key: r.coin, ids: rows.filter(x => x.coin === r.coin).map(x => x.team.id), where: `Group ${label}` });
+    }
+  }
+  for (const sd of seeds) if (sd.coin && seeds.some(x => x.coin === sd.coin && x.tb === 'coin?') && !out.has(sd.coin)) {
+    const ids = seeds.filter(x => x.coin === sd.coin).map(x => x.id);
+    out.set(sd.coin, { key: sd.coin, ids, where: `Seeding · ${ordinal(sd.place)} places` });
+  }
+  return [...out.values()];
+}
+const ordinal = n => `${n}${n % 10 === 1 && n % 100 !== 11 ? 'st' : n % 10 === 2 && n % 100 !== 12 ? 'nd' : n % 10 === 3 && n % 100 !== 13 ? 'rd' : 'th'}`;
 
 // ---------- stats ----------
 
-const SUMS = ['kills', 'deaths', 'assists', 'damage', 'obj_time', 'plants', 'defuses', 'first_bloods', 'captures'];
+const SUMS = ['kills', 'deaths', 'assists', 'damage', 'obj_time', 'plants', 'defuses', 'first_bloods', 'captures', 'non_traded_kills', 'obj_kills', 'contested_time'];
+// caster-only stats: averaged over the maps that actually have them (casted maps), not all maps
+const ADV = ['assists', 'damage', 'first_bloods', 'non_traded_kills', 'obj_kills', 'contested_time', 'avg_hill_time', 'highest_streak'];
 
 /** Join games with their match (for stage filters) and index stats by game. */
 export function indexEvent(data) {
@@ -273,10 +390,13 @@ export function playerBoard(data, filters = {}, idx = indexEvent(data)) {
     for (const s of idx.statsByGame.get(g.id) || []) {
       if (filters.team && s.team_id !== filters.team) continue;
       const key = s.player_id || `${s.team_id}:${(s.player_name || '').toLowerCase()}`;
-      if (!rows.has(key)) rows.set(key, { key, name: s.player_name, team: teamById.get(s.team_id) || null, games: 0, ...Object.fromEntries(SUMS.map(f => [f, 0])), hp: 0 });
+      if (!rows.has(key)) rows.set(key, { key, name: s.player_name, team: teamById.get(s.team_id) || null, games: 0, ...Object.fromEntries(SUMS.map(f => [f, 0])), hp: 0, n: {}, hill_sum: 0, highest_streak: 0 });
       const r = rows.get(key);
       r.games++;
       for (const f of SUMS) r[f] += Number(s[f]) || 0;
+      for (const f of ADV) if (s[f] != null && s[f] !== '') r.n[f] = (r.n[f] || 0) + 1;
+      if (s.avg_hill_time != null) r.hill_sum += Number(s.avg_hill_time) || 0;
+      if (s.highest_streak != null) r.highest_streak = Math.max(r.highest_streak, Number(s.highest_streak) || 0);
       if (g.mode === 'Hardpoint' && s.obj_time != null) r.hp++;
     }
   }
@@ -285,8 +405,21 @@ export function playerBoard(data, filters = {}, idx = indexEvent(data)) {
     kd: r.deaths ? r.kills / r.deaths : r.kills,
     kpg: r.kills / r.games,
     objpg: r.hp ? r.obj_time / r.hp : null,
-    dmgpg: r.damage ? r.damage / r.games : null,
+    casted: Math.max(0, ...Object.values(r.n)),             // maps with caster stats
+    dmgpg: r.n.damage ? r.damage / r.n.damage : null,
+    apg: r.n.assists ? r.assists / r.n.assists : null,
+    ntkpg: r.n.non_traded_kills ? r.non_traded_kills / r.n.non_traded_kills : null,
+    objkpg: r.n.obj_kills ? r.obj_kills / r.n.obj_kills : null,
+    contpg: r.n.contested_time ? r.contested_time / r.n.contested_time : null,
+    avg_hill: r.n.avg_hill_time ? r.hill_sum / r.n.avg_hill_time : null,
+    first_bloods: r.n.first_bloods ? r.first_bloods : null,
+    highest_streak: r.n.highest_streak ? r.highest_streak : null,
   }));
+}
+
+/** True when any stat line has caster-only numbers (so advanced columns are worth showing). */
+export function hasAdvanced(stats, keys = ['damage', 'assists', 'non_traded_kills', 'first_bloods']) {
+  return stats.some(s => keys.some(k => s[k] != null && s[k] !== ''));
 }
 
 /** Team table: series and map records, K/D, record per mode. */
@@ -389,14 +522,100 @@ export function autoRows(teams, rowCount) {
   return Object.fromEntries(sorted.map((t, i) => [t.id, (i % n) + 1]));
 }
 
-/** Where a match is played. Returns { label, rows?: [a, b], pod?: string } or null. */
-export function matchSpot(m, r, teamById, label = 'Row') {
-  if (m.stage === 'group') {
-    const ra = teamById.get(r?.A)?.row_no ?? null, rb = teamById.get(r?.B)?.row_no ?? null;
-    if (ra != null || rb != null) return { rows: [ra, rb], label: `${label}s ${ra ?? '?'} & ${rb ?? '?'}`, short: `${ra ?? '?'}/${rb ?? '?'}` };
-    return m.station ? { pod: m.station, label: m.station, short: m.station } : null;
+// ---------- sessions (e.g. Morning / Evening) ----------
+// seating.sessions: [{ id, name }]   seating.plan: { A: { session: 's1', from: 1 }, ... }
+// A group plays its whole group stage in one session on a block of rows (A: Morning rows 1–4).
+
+const groupSizes = teams => {
+  const by = {};
+  for (const t of teams) if (t.group_label) by[t.group_label] = (by[t.group_label] || 0) + 1;
+  return by;
+};
+
+/** Pack groups in order: fill session 1's rows, then session 2's, and so on. */
+export function autoPlan(teams, seating) {
+  const rows = Math.max(1, seating.group_rows || 8);
+  const sessions = seating.sessions?.length ? seating.sessions : [{ id: 's1', name: 'Session 1' }];
+  const sizes = groupSizes(teams);
+  const plan = {};
+  let si = 0, next = 1;
+  for (const g of Object.keys(sizes).sort()) {
+    if (next > 1 && next + sizes[g] - 1 > rows) { si = Math.min(si + 1, sessions.length - 1); next = 1; }
+    plan[g] = { session: sessions[si].id, from: next };
+    next += sizes[g];
   }
-  return m.station ? { pod: m.station, label: m.station, short: m.station } : null;
+  return plan;
+}
+
+/** Row for every team from the plan: seed order inside each group, starting at the group's first row. */
+export function planRows(teams, plan = {}) {
+  const out = {};
+  const by = {};
+  for (const t of teams) if (t.group_label) (by[t.group_label] ||= []).push(t);
+  for (const [g, list] of Object.entries(by)) {
+    const p = plan[g];
+    if (!p) continue;
+    list.sort((a, b) => (a.seed ?? 999) - (b.seed ?? 999) || a.name.localeCompare(b.name))
+      .forEach((t, i) => { out[t.id] = p.from + i; });
+  }
+  return out;
+}
+
+/** Problems with a plan: groups sharing rows in the same session, or running past the last row. */
+export function planIssues(teams, seating, plan = seating.plan || {}) {
+  const rows = Math.max(1, seating.group_rows || 8);
+  const sizes = groupSizes(teams);
+  const issues = [];
+  const name = id => seating.sessions?.find(x => x.id === id)?.name || 'a session';
+  const gs = Object.keys(sizes).sort();
+  for (const g of gs) {
+    const p = plan[g];
+    if (!p) { issues.push({ group: g, text: `Group ${g} has no session or rows yet` }); continue; }
+    const end = p.from + sizes[g] - 1;
+    if (end > rows) issues.push({ group: g, text: `Group ${g} needs rows ${p.from}–${end}, but there are only ${rows}` });
+  }
+  for (let i = 0; i < gs.length; i++) for (let j = i + 1; j < gs.length; j++) {
+    const a = plan[gs[i]], b = plan[gs[j]];
+    if (!a || !b || a.session !== b.session) continue;
+    const ae = a.from + sizes[gs[i]] - 1, be = b.from + sizes[gs[j]] - 1;
+    if (a.from <= be && b.from <= ae) issues.push({ group: gs[j], text: `Groups ${gs[i]} and ${gs[j]} share rows in ${name(a.session)}` });
+  }
+  return issues;
+}
+
+/** The session a team plays its group stage in (from its group's plan). */
+export function teamSession(team, seating) {
+  const id = seating?.plan?.[team?.group_label]?.session;
+  return id ? seating.sessions?.find(x => x.id === id) || null : null;
+}
+
+/** Where a match is played. Returns { label, full, rows?: [a, b], pod?, session? } or null.
+ *  opts: the seating settings (or just the row label). */
+export function matchSpot(m, r, teamById, opts = 'Row') {
+  const seat = typeof opts === 'string' ? { label: opts } : (opts || {});
+  const label = seat.label || 'Row';
+  if (m.stage === 'group') {
+    const ta = teamById.get(r?.A), tb = teamById.get(r?.B);
+    const ra = ta?.row_no ?? null, rb = tb?.row_no ?? null;
+    if (ra != null || rb != null) {
+      const ses = teamSession(ta, seat) || teamSession(tb, seat);
+      const lbl = `${label}s ${ra ?? '?'} & ${rb ?? '?'}`;
+      return { rows: [ra, rb], label: lbl, full: ses ? `${ses.name} · ${lbl}` : lbl, session: ses?.name || null, short: `${ra ?? '?'}/${rb ?? '?'}` };
+    }
+  }
+  if (m.row_a != null || m.row_b != null) {
+    const ra = m.row_a ?? null, rb = m.row_b ?? null;
+    const lbl = `${label}s ${ra ?? '?'} & ${rb ?? '?'}`;
+    return { rows: [ra, rb], label: lbl, full: lbl, session: null, short: `${ra ?? '?'}/${rb ?? '?'}` };
+  }
+  // older events stored one pod name per bracket match
+  return m.station ? { pod: m.station, label: m.station, full: m.station, short: m.station } : null;
+}
+
+/** "AFTERGLOW → Row 5 · IRONCLAD → Row 6" pieces: [[teamId, row], [teamId, row]] for a spot. */
+export function spotTeams(spot, r) {
+  if (!spot?.rows) return [];
+  return [[r?.A, spot.rows[0]], [r?.B, spot.rows[1]]];
 }
 
 /** Seating clashes between matches that are live or on deck:
@@ -423,10 +642,46 @@ export function seatConflicts(matches, resolved, teamById, label = 'Row') {
   return out;
 }
 
-/** First bracket pod not used by another live match. */
-export function freeStation(stations, matches, exceptId = null) {
-  const used = new Set(matches.filter(m => m.status === 'live' && m.id !== exceptId && m.station).map(m => m.station));
-  return stations.find(s => !used.has(s)) || null;
+/** Rows held by live bracket matches (optionally ignoring one match). */
+export function busyRows(matches, exceptId = null) {
+  const out = new Set();
+  for (const m of matches) {
+    if (m.status !== 'live' || m.id === exceptId || m.stage === 'group') continue;
+    if (m.row_a != null) out.add(Number(m.row_a));
+    if (m.row_b != null) out.add(Number(m.row_b));
+  }
+  return out;
+}
+
+/** The row a team last played on in the bracket (live first, then the most recent final). */
+export function teamRow(team, matches, resolved, exceptId = null) {
+  if (!team || team === 'BYE') return null;
+  const hit = matches
+    .filter(x => x.stage !== 'group' && x.id !== exceptId && (x.status === 'live' || x.status === 'final'))
+    .map(x => { const r = resolved.get(x.id); return { x, row: r?.A === team ? x.row_a : r?.B === team ? x.row_b : null }; })
+    .filter(o => o.row != null)
+    .sort((a, b) => (b.x.status === 'live') - (a.x.status === 'live') || (b.x.updated_at || '').localeCompare(a.x.updated_at || '') || (b.x.queue_pos ?? 0) - (a.x.queue_pos ?? 0))[0];
+  return hit ? Number(hit.row) : null;
+}
+
+const mate = r => (r % 2 ? r + 1 : r - 1); // 1↔2, 3↔4, 5↔6 …
+
+/** Two free rows for a bracket match: [rowA, rowB] or null.
+ *  Keeps each team on the row it wants (prefer = [a, b]) when free, otherwise takes a free side-by-side pair. */
+export function freeRowPair(nRows, busy, prefer = [null, null]) {
+  const free = r => r >= 1 && r <= nRows && !busy.has(r);
+  let [a, b] = prefer.map(x => (x != null && free(Number(x)) ? Number(x) : null));
+  if (a != null && a === b) b = null;
+  if (a != null && b == null && free(mate(a)) && mate(a) !== a) b = mate(a);
+  if (b != null && a == null && free(mate(b)) && mate(b) !== b) a = mate(b);
+  if (a == null && b == null) {
+    for (let r = 1; r < nRows; r += 2) if (free(r) && free(r + 1)) return [r, r + 1];
+  }
+  const rest = [];
+  for (let r = 1; r <= nRows; r++) if (free(r) && r !== a && r !== b) rest.push(r);
+  if (a == null) a = rest.shift() ?? null;
+  if (b == null) b = rest.shift() ?? null;
+  return a != null && b != null ? [a, b] : null;
 }
 
 // ---------- live map score ----------
@@ -472,4 +727,355 @@ export function categoryLeaders(data, settings, idx = indexEvent(data), minGames
   pick(all, r => r.kills, v => String(v), 'Most kills');
   pick(all.filter(r => r.dmgpg), r => r.dmgpg, v => Math.round(v).toLocaleString(), 'Damage / map');
   return out;
+}
+
+// ---------- bracket seating helper ----------
+// Keeping a team on the same setup between back-to-back matches saves the time it takes to move,
+// log in and fix settings. This only suggests rows for each bracket match; staff decide.
+
+/**
+ * For every upcoming bracket match: a row for each team that lets anyone who just played stay put.
+ * A team stays on the row it last played on in the bracket. A team that isn't known yet
+ * ("Winner of U2-1") stays on whichever of that match's rows it's on, so its row is decided when that match ends.
+ * Rows promised to a match earlier in the queue aren't offered again; clash = { full: true } when no rows are free.
+ * Returns [{ match, rows: [a, b], current: [a, b], ok, sides: [{ who, team, row, stays, waits, takesFrom }], clash }] in queue order.
+ * takesFrom = { code, rows }: no row is free, so this team takes the row the other team of that match leaves.
+ */
+export function bracketRowHelp(matches, resolved, nRows = 8) {
+  const bracket = matches.filter(m => m.stage !== 'group');
+  const byCode = new Map(bracket.filter(m => m.code).map(m => [m.code, m]));
+  const order = m => (m.status === 'ondeck' ? 0 : 1) * 1e4 + (m.queue_pos ?? 9999);
+  const open = bracket.filter(m => {
+    const r = resolved.get(m.id);
+    return m.status !== 'final' && m.status !== 'live' && !r?.result?.done && r?.A !== 'BYE' && r?.B !== 'BYE';
+  }).sort((a, b) => order(a) - order(b));
+
+  const out = [];
+  const taken = new Map(); // row → earlier open match suggested there
+  for (const m of open) {
+    const r = resolved.get(m.id) || {};
+    const sides = [[m.src_a, r.A], [m.src_b, r.B]].map(([src, team]) => {
+      const [kind, ref] = (src || '').split(':');
+      const feeder = (kind === 'W' || kind === 'L') ? byCode.get(ref) : null;
+      if (team && team !== 'BYE') {
+        const row = teamRow(team, bracket, resolved, m.id);
+        return { who: team, team, row, stays: row != null, waits: null };
+      }
+      const who = feeder ? `${kind === 'W' ? 'Winner' : 'Loser'} of ${feeder.code}` : null;
+      const fromRows = feeder && (feeder.row_a != null || feeder.row_b != null) ? [feeder.row_a, feeder.row_b] : null;
+      return { who, team: null, row: null, stays: false, waits: fromRows ? feeder.code : null, fromRows };
+    });
+    if (!sides.some(x => x.stays || x.waits)) continue;
+    // rows other live matches are holding (not the ones these teams are leaving)
+    const busy = new Set();
+    for (const x of bracket) {
+      if (x.status !== 'live') continue;
+      const xr = resolved.get(x.id);
+      if (sides.some(sd => sd.team && (xr?.A === sd.team || xr?.B === sd.team))) continue;
+      if (sides.some(sd => sd.waits && x.code === sd.waits)) continue;
+      if (x.row_a != null) busy.add(Number(x.row_a));
+      if (x.row_b != null) busy.add(Number(x.row_b));
+    }
+    // rows already promised to matches earlier in the queue are not free either
+    for (const x of taken.keys()) busy.add(x);
+    const want = sides.map(sd => (sd.stays ? sd.row : null));
+    if (want[0] != null && want[0] === want[1]) want[1] = null;
+    // keep the rows a still-to-be-decided team will come from out of the other side's way
+    const hold = new Set(sides.flatMap(sd => (sd.fromRows || []).filter(x => x != null).map(Number)));
+    const pick = freeRowPair(nRows, new Set([...busy, ...[...hold].filter(x => !want.includes(x))]), want);
+    // no free row, but the opponent comes out of a match that's still on: take the row its other team leaves
+    const feeder = !pick && sides.find(sd => sd.waits && sd.fromRows);
+    const rows = pick ? sides.map((sd, k) => (sd.waits ? null : pick[k])) : [null, null];
+    sides.forEach((sd, k) => {
+      sd.stays = sd.stays && rows[k] != null && rows[k] === sd.row; sd.row = rows[k];
+      if (feeder && sd !== feeder) sd.takesFrom = { code: feeder.waits, rows: feeder.fromRows.filter(x => x != null).map(Number) };
+    });
+    // nothing free: the match waits for a live one to finish
+    const clash = !pick && !feeder ? { full: true } : null;
+    rows.forEach(x => { if (x != null) taken.set(x, m); });
+    const current = [m.row_a ?? null, m.row_b ?? null];
+    const ok = !clash && rows.every((x, k) => x == null || Number(current[k]) === x);
+    out.push({ match: m, rows, current, ok, sides, clash });
+  }
+  return out;
+}
+
+// ---------- estimated start times ----------
+// The day is simulated forward. A match takes its maps (15 min each). A team's next match starts after a break
+// (15–30 min, which is also log-in and setup time) and at least an hour after its last match started:
+// a 3–0 = 3 × 15 + 15 = 1 h, every extra map adds 15 min. Both teams ready early → no break, no minimum.
+// Teams that are only waiting on other matches start as soon as those finish. Rows are free when a match ends.
+// Pace starts from the settings and learns from finished matches.
+
+export const EST_DEFAULTS = { setup_minutes: 0, map_minutes: 15, break_minutes: 15, slot_minutes: 60, day_start: '', session_starts: {}, public: true };
+const median = xs => { const s = [...xs].sort((a, b) => a - b); const n = s.length; return n ? (n % 2 ? s[(n - 1) / 2] : (s[n / 2 - 1] + s[n / 2]) / 2) : null; };
+
+/** Minutes per map and maps per series: the settings, blended with what finished matches show (weight grows with samples). */
+export function pace(matches, games, settings = {}) {
+  const est = { ...EST_DEFAULTS, ...(settings.est || {}) };
+  const gbm = gamesByMatch(games);
+  const perMap = [];
+  const mapsByBo = {};
+  for (const m of matches) {
+    if (m.status !== 'final') continue;
+    const n = (gbm.get(m.id) || []).filter(g => gameWinner(g)).length;
+    if (n) (mapsByBo[m.best_of] ||= []).push(n);
+    if (!m.started_at || !m.ended_at || !n) continue;
+    const mins = (new Date(m.ended_at) - new Date(m.started_at)) / 60000 - (Number(est.setup_minutes) || 0);
+    if (mins > 2 && mins < n * 45) perMap.push(mins / n); // ignore matches marked final by mistake / left running
+  }
+  const k = perMap.length, w = k / (k + 3);
+  const mapMin = k ? w * median(perMap) + (1 - w) * est.map_minutes : est.map_minutes;
+  const expMaps = bo => {
+    const need = Math.floor(bo / 2) + 1;
+    const guess = need + (bo - need) * 0.5;
+    const xs = mapsByBo[bo] || [];
+    if (!xs.length) return guess;
+    const ww = xs.length / (xs.length + 3);
+    return ww * (xs.reduce((a, b) => a + b, 0) / xs.length) + (1 - ww) * guess;
+  };
+  const brk = Math.min(30, Math.max(0, Number(est.break_minutes ?? 15)));
+  const slot = Math.max(0, Number(est.slot_minutes ?? 60));
+  return { mapMin, setup: Math.max(0, Number(est.setup_minutes ?? 0)), brk, slot, expMaps, samples: k, learned: k ? median(perMap) : null };
+}
+
+/** "HH:MM" on the event's date (YYYY-MM-DD) → Date, or null. */
+export function timeOn(dateStr, hhmm) {
+  if (hhmm && /^\d{4}-\d{2}-\d{2}T\d{1,2}:\d{2}/.test(hhmm)) { const d = new Date(hhmm); return isNaN(d) ? null : d; } // full date + time
+  if (!hhmm || !/^\d{1,2}:\d{2}$/.test(hhmm)) return null;
+  const day = dateStr || new Date().toLocaleDateString('en-CA');
+  const d = new Date(`${day}T${hhmm.padStart(5, '0')}:00`);
+  return isNaN(d) ? null : d;
+}
+
+/**
+ * Expected start / end of every match that isn't final: Map id → { start: Date, end: Date, live }.
+ * opts: { now: Date, settings, teamById, eventDate }
+ */
+export function estimateTimes(matches, resolved, games, { now = new Date(), settings = {}, teamById = new Map(), eventDate = null, sunday = null } = {}) {
+  const p = pace(matches, games, settings);
+  const est = { ...EST_DEFAULTS, ...(settings.est || {}) };
+  const MIN = 60000;
+  const gbm = gamesByMatch(games);
+  const out = new Map();
+  const t0 = now.getTime();
+  const anyStarted = matches.some(m => m.status === 'live' || m.status === 'final');
+  const firstSession = (settings.seating?.sessions || [])[0]?.id;
+  const dayStart = timeOn(eventDate, est.session_starts?.[firstSession]) || timeOn(eventDate, est.day_start);
+  const base = !anyStarted && dayStart && dayStart.getTime() > t0 ? dayStart.getTime() : t0;
+  const brk = p.brk * MIN, setup = p.setup * MIN, slot = p.slot * MIN;
+  // per team: when its last match started and ended (its next one waits for the break and the minimum slot)
+  const teamEnd = new Map(), teamStart = new Map(), rowFree = new Map(), endOf = new Map(), startOf = new Map();
+  const nextOk = (start, end, early) => (early ? end : Math.max(end + brk, start + slot));
+  const bump = (map, key, t) => { if (key != null) map.set(key, Math.max(map.get(key) || 0, t)); };
+  const seat = settings.seating || {};
+  const nRows = Math.max(2, seat.group_rows || 8);
+  const sessions = (seat.sessions || []).map(x => x.id);
+  // phases: group sessions in order (0, 1 …), then the bracket (1000), then the final day (2000)
+  const sesOf = m => {
+    if (m.stage !== 'group') return sunday?.has(m.id) ? 2e3 : 1e3;
+    const i = sessions.indexOf(seat.plan?.[m.group_label]?.session);
+    return i < 0 ? 0 : i;
+  };
+  const rowsOf = (m, r) => {
+    if (m.stage === 'group') return [teamById.get(r?.A)?.row_no, teamById.get(r?.B)?.row_no].filter(x => x != null).map(x => `g${sesOf(m)}:${x}`);
+    return [m.row_a, m.row_b].filter(x => x != null).map(x => `b:${x}`);
+  };
+  const phaseEnd = new Map(); // session index (1000 = bracket) → latest expected end
+  const bumpPhase = (m, t) => phaseEnd.set(sesOf(m), Math.max(phaseEnd.get(sesOf(m)) || 0, t));
+
+  // finished matches: teams and rows rest until a gap after they ended
+  for (const m of matches) {
+    if (m.status !== 'final' && !resolved.get(m.id)?.result?.done) continue;
+    const r = resolved.get(m.id) || {};
+    const t = m.ended_at ? new Date(m.ended_at).getTime() : 0;
+    const st = m.started_at ? new Date(m.started_at).getTime() : t;
+    endOf.set(m.id, t); startOf.set(m.id, st);
+    bumpPhase(m, t);
+    if (nextOk(st, t, false) > base) {
+      bump(teamEnd, r.A, t); bump(teamEnd, r.B, t); bump(teamStart, r.A, st); bump(teamStart, r.B, st);
+      rowsOf(m, r).forEach(x => bump(rowFree, x, t));
+    }
+  }
+  // live matches: the rest of the series from now (the map in play counts as half done)
+  for (const m of matches) {
+    if (m.status !== 'live') continue;
+    const r = resolved.get(m.id) || {};
+    const played = (gbm.get(m.id) || []).filter(g => gameWinner(g)).length;
+    const start = m.started_at ? new Date(m.started_at).getTime() : t0;
+    // still in setup: the rest of setup, then all the maps; otherwise the map in play counts as half done
+    const setupLeft = played ? 0 : Math.max(0, start + setup - t0);
+    const left = setupLeft > 0 ? p.expMaps(m.best_of) : Math.max(0.5, p.expMaps(m.best_of) - played - 0.5);
+    const end = t0 + setupLeft + left * p.mapMin * MIN;
+    out.set(m.id, { start: new Date(start), end: new Date(end), live: true });
+    endOf.set(m.id, end); startOf.set(m.id, start);
+    bumpPhase(m, end);
+    bump(teamEnd, r.A, end); bump(teamEnd, r.B, end); bump(teamStart, r.A, start); bump(teamStart, r.B, start);
+    rowsOf(m, r).forEach(x => bump(rowFree, x, end));
+  }
+  // everything else, phase by phase (sessions in order, then the bracket), on-deck first, then the queue
+  const byCode = new Map(matches.filter(m => m.code).map(m => [m.code, m]));
+  let todo = matches.filter(m => m.status !== 'final' && m.status !== 'live' && !resolved.get(m.id)?.result?.done
+    && resolved.get(m.id)?.A !== 'BYE' && resolved.get(m.id)?.B !== 'BYE')
+    .sort((a, b) => sesOf(a) - sesOf(b) || (a.status === 'ondeck' ? 0 : 1) - (b.status === 'ondeck' ? 0 : 1) || (a.queue_pos ?? 1e4) - (b.queue_pos ?? 1e4));
+  const gateFor = m => {
+    const s = sesOf(m);
+    let g = base;
+    for (const [ph, t] of phaseEnd) if (ph < s) g = Math.max(g, t);
+    const st = s < 1e3 ? timeOn(eventDate, est.session_starts?.[sessions[s]]) : timeOn(eventDate, s === 2e3 ? est.sunday_start || est.bracket_start : est.bracket_start);
+    if (st) g = Math.max(g, st.getTime());
+    return g;
+  };
+  for (let pass = 0; pass < 4 && todo.length; pass++) {
+    const later = [];
+    for (const m of todo) {
+      const r = resolved.get(m.id) || {};
+      // a team still to be decided is free when the match it comes from ends
+      // both teams readied up early: no break
+      const early = !!(r.A && r.B && m.checkin?.[r.A] && m.checkin?.[r.B]);
+      let ready = gateFor(m), waiting = false;
+      for (const [team, src] of [[r.A, m.src_a], [r.B, m.src_b]]) {
+        if (team) { if (teamEnd.has(team)) ready = Math.max(ready, nextOk(teamStart.get(team) ?? teamEnd.get(team), teamEnd.get(team), early)); continue; }
+        const [kind, ref] = (src || '').split(':');
+        const f = (kind === 'W' || kind === 'L') ? byCode.get(ref) : null;
+        if (f && endOf.has(f.id)) ready = Math.max(ready, nextOk(startOf.get(f.id) ?? endOf.get(f.id), endOf.get(f.id), early));
+        else if (f) waiting = true;
+      }
+      if (waiting) { later.push(m); continue; }
+      let rows = rowsOf(m, r);
+      if (m.stage !== 'group' && rows.length < 2) {
+        // no rows set yet: the two rows that free up first
+        const free = Array.from({ length: nRows }, (_, i) => `b:${i + 1}`).filter(x => !rows.includes(x))
+          .sort((a, b) => (rowFree.get(a) || 0) - (rowFree.get(b) || 0));
+        rows = [...rows, ...free.slice(0, 2 - rows.length)];
+      }
+      for (const x of rows) ready = Math.max(ready, rowFree.get(x) || 0);
+      const start = ready;
+      const end = start + setup + p.expMaps(m.best_of) * p.mapMin * MIN;
+      out.set(m.id, { start: new Date(start), end: new Date(end), live: false, early });
+      endOf.set(m.id, end); startOf.set(m.id, start);
+      bumpPhase(m, end);
+      bump(teamEnd, r.A, end); bump(teamEnd, r.B, end); bump(teamStart, r.A, start); bump(teamStart, r.B, start);
+      rows.forEach(x => bump(rowFree, x, end));
+    }
+    if (later.length === todo.length) break;
+    todo = later;
+  }
+  return out;
+}
+
+/** "2:40 PM" (rounded to 5 minutes), or "Now" when it's due. */
+export function fmtEst(d, now = new Date()) {
+  if (!d) return '';
+  if (d.getTime() - now.getTime() < 3 * 60000) return 'Now';
+  const r = new Date(Math.round(d.getTime() / 300000) * 300000);
+  return r.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
+/** A team's break after its last match (the break, and at least the minimum slot from its start): { until, left } or null. */
+export function teamBreak(teamId, matches, resolved, settings = {}, now = new Date()) {
+  const est = { ...EST_DEFAULTS, ...(settings.est || {}) };
+  const brk = Math.min(30, Math.max(0, Number(est.break_minutes ?? 15))) * 60000;
+  const slot = Math.max(0, Number(est.slot_minutes ?? 60)) * 60000;
+  let last = 0, lastStart = 0;
+  for (const m of matches) {
+    if (m.status !== 'final' || !m.ended_at) continue;
+    const r = resolved.get(m.id);
+    if ((r?.A === teamId || r?.B === teamId) && new Date(m.ended_at).getTime() > last) {
+      last = new Date(m.ended_at).getTime();
+      lastStart = m.started_at ? new Date(m.started_at).getTime() : last;
+    }
+  }
+  const until = Math.max(last + brk, lastStart + slot);
+  return last && until > now.getTime() ? { until: new Date(until), left: Math.ceil((until - now.getTime()) / 60000) } : null;
+}
+
+// ---------- the final day (top N) ----------
+
+/**
+ * Which bracket matches are played on the final day (Sunday, top 6), and what Saturday matches mean for it.
+ * Double elimination: Sunday starts with the 2 teams in the winners final and the rest in the lower bracket
+ * (top 6 = winners final + losers quarterfinals). So:
+ *  - sunday:    winners final, every lower round after the cut, grand final
+ *  - both:      Saturday matches whose two teams are already through (upper semis: winner → winners final,
+ *               loser → losers quarterfinals). They still play them on Saturday.
+ *  - qualifies: Saturday matches whose winner makes it (upper quarters, the last Saturday lower round)
+ *  - qualified: teams that are through (in a Sunday or "both" match)
+ * The cut is the lower round after which `top` teams are left. Returns null when there's no cut.
+ * pickedRounds: ['upper:4', 'lower:4', …] (roundKey) to use the rounds staff ticked instead of working them out.
+ */
+export const roundKey = m => `${m.stage}:${m.stage === 'grand' ? 1 : m.round}`;
+
+export function finalDayPlan(matches, resolved, top = 6, pickedRounds = null) {
+  const bm = matches.filter(m => m.stage !== 'group');
+  if (!top || bm.length < 2) return null;
+  const next = (m, kind) => bm.find(x => x.src_a === `${kind}:${m.code}` || x.src_b === `${kind}:${m.code}`) || null;
+  const sunday = new Set();
+  let auto = true;
+  if (pickedRounds?.length) {
+    // staff picked the Sunday rounds themselves
+    const keys = new Set(pickedRounds);
+    for (const m of bm) if (keys.has(roundKey(m))) sunday.add(m.id);
+    auto = false;
+  }
+  const real = m => { const r = resolved.get(m.id); return r?.A !== 'BYE' && r?.B !== 'BYE'; };
+  const teams = new Set();
+  for (const m of bm) for (const src of [m.src_a, m.src_b]) if (src?.startsWith('S:')) {
+    const r = resolved.get(m.id); const t = src === m.src_a ? r?.A : r?.B;
+    if (t && t !== 'BYE') teams.add(t); else if (!t) teams.add(src);
+  }
+  const n = teams.size;
+  if (auto && n <= top) return null;
+  const lower = bm.filter(m => m.stage === 'lower');
+  const cutAt = list => {
+    const rounds = [...new Set(list.map(m => m.round))].sort((a, b) => a - b);
+    let alive = n, prev = null;
+    for (const r of rounds) {
+      alive -= list.filter(m => m.round === r && real(m)).length;
+      if (alive === top) return r;
+      if (alive < top) return prev;
+      prev = r;
+    }
+    return null;
+  };
+  if (!auto) { /* rounds picked by staff */ } else if (lower.length) {
+    const cut = cutAt(lower);
+    if (cut == null) return null;
+    const upperRounds = bm.filter(m => m.stage === 'upper').map(m => m.round);
+    const lastUpper = Math.max(...upperRounds);
+    for (const m of bm) {
+      if (m.stage === 'grand') sunday.add(m.id);
+      else if (m.stage === 'lower' && m.round > cut) sunday.add(m.id);
+      else if (m.stage === 'upper') {
+        const drop = next(m, 'L')?.round ?? Infinity;
+        if (m.round === lastUpper || drop > cut + 1) sunday.add(m.id);
+      }
+    }
+  } else {
+    const cut = cutAt(bm);
+    if (cut == null) return null;
+    for (const m of bm) if (m.round > cut) sunday.add(m.id);
+  }
+  if (!sunday.size) return null;
+  // Saturday matches whose winner and loser both end up on Sunday (or in another such match)
+  const both = new Set();
+  const through = x => x && (sunday.has(x.id) || both.has(x.id));
+  for (let changed = true; changed;) {
+    changed = false;
+    for (const m of bm) {
+      if (sunday.has(m.id) || both.has(m.id) || !m.code) continue;
+      if (through(next(m, 'W')) && through(next(m, 'L'))) { both.add(m.id); changed = true; }
+    }
+  }
+  const qualifies = new Set();
+  for (const m of bm) {
+    if (sunday.has(m.id) || both.has(m.id) || !m.code) continue;
+    if (through(next(m, 'W'))) qualifies.add(m.id);
+  }
+  const qualified = new Set();
+  for (const id of [...sunday, ...both]) {
+    const r = resolved.get(id);
+    for (const t of [r?.A, r?.B]) if (t && t !== 'BYE') qualified.add(t);
+  }
+  return { sunday, both, qualifies, qualified, top, auto };
 }

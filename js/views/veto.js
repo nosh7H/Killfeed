@@ -65,6 +65,7 @@ export async function vetoView(vetoId) {
         h('div', { class: 'eyebrow' }, `${ev.event.name} · Map veto`),
         h('h1', {}, teamName(v.team_a), h('span', { class: 'vs' }, 'vs'), teamName(v.team_b)),
         h('div', { class: 'row' },
+          side && ev.myTeam ? h('a', { class: 'btn btn-sm btn-ghost', href: `#/e/${ev.event.id}/me` }, '← My team') : null,
           h('span', { class: 'pill' }, side ? `Captain · ${teamName(myTeam)}` : 'Spectating'),
           h('span', { class: 'muted small' }, `${teamName(v.team_a)} starts the veto`))),
       vetoBanner(v, side),

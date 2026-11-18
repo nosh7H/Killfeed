@@ -18,6 +18,9 @@ import { eventsView } from './views/events.js';
 import { eventOverview, eventBracket, eventStats, eventTeams, eventTeam } from './views/event.js';
 import { eventSetup } from './views/event-admin.js';
 import { eventControl, eventSeating } from './views/event-control.js';
+import { eventScreens } from './views/event-screens.js';
+import { eventLog } from './views/event-log.js';
+import { eventMe } from './views/event-me.js';
 import { eventMatch } from './views/event-match.js';
 import { displayView } from './views/display.js';
 import { vetoView } from './views/veto.js';
@@ -55,10 +58,16 @@ const publicRoutes = [
   [/^#\/e\/([^/]+)\/setup$/, (_, id) => withEvent(id, eventSetup)],
   [/^#\/e\/([^/]+)\/control$/, (_, id) => withEvent(id, eventControl)],
   [/^#\/e\/([^/]+)\/seating$/, (_, id) => withEvent(id, eventSeating)],
-  [/^#\/veto\/([^/]+)$/, (_, id) => vetoView(id)],
+  [/^#\/e\/([^/]+)\/screens$/, (_, id) => withEvent(id, eventScreens)],
+  [/^#\/e\/([^/]+)\/log$/, (_, id) => withEvent(id, eventLog)],
+  [/^#\/e\/([^/]+)\/me$/, (_, id) => withEvent(id, eventMe)],
+  [/^#\/veto\/([^/]+)$/, (_, id) => { markVisitor(); return vetoView(id); }],
 ];
 
+function markVisitor() { if (!state.user) { try { localStorage.setItem('kf-event-visitor', '1'); } catch { /* private mode */ } } }
+
 async function withEvent(id, view) {
+  markVisitor();
   const event = await loadEvent(id, { force: true });
   if (!event) return h('div', { class: 'empty' }, h('h2', {}, 'Event not found'), h('p', {}, 'It may be private, or the link is wrong.'));
   return view();
@@ -126,11 +135,12 @@ function renderNav() {
   const inEvent = hash.startsWith('#/e/') && ev.event;
   applyAccent(inEvent ? ev.event.accent : state.team && hash.startsWith('#/t/') ? state.team.accent : null);
   applyFont(inEvent ? ev.event.settings?.font || 'mix' : deviceFont());
-  nav.append(h('a', { class: 'brand', href: '#/' }, h('span', { class: 'brand-mark' }), SITE_NAME));
-  if (!state.user) {
-    if (hash.startsWith('#/e/')) nav.append(h('div', { class: 'nav-right' }, h('a', { class: 'btn btn-ghost btn-sm', href: '#/' }, 'Sign in')));
-    return;
-  }
+  // event visitors (viewers, players, captains: not signed in) only ever see the event. No way into the
+  // team analytics side from here; staff sign in from the site's main address.
+  const visitor = !state.user && (hash.startsWith('#/e/') || hash.startsWith('#/veto/'));
+  const home = visitor ? (ev.event ? `#/e/${ev.event.id}` : location.hash) : '#/';
+  nav.append(h('a', { class: 'brand', href: home }, h('span', { class: 'brand-mark' }), SITE_NAME));
+  if (!state.user) return;
 
   const top = h('nav', { class: 'nav-links' },
     h('a', { href: state.team ? teamPath('home') : '#/teams', class: hash.startsWith('#/t/') || hash === '#/teams' ? 'active' : '' }, 'Teams'),
