@@ -7,8 +7,8 @@
 // supabase/schema.sql protects the data.
 // ============================================================
 
-export const SUPABASE_URL = 'https://gzlrtkboucdokqkbslzw.supabase.co/';        // e.g. 'https://abcdxyz.supabase.co'
-export const SUPABASE_ANON_KEY = 'sb_publishable_t09-qz4zAoNbHHLvKl2CYg_S8tmhujF';   // Project Settings → API → anon public key
+export const SUPABASE_URL = //'https://gzlrtkboucdokqkbslzw.supabase.co/';        // e.g. 'https://abcdxyz.supabase.co'
+export const SUPABASE_ANON_KEY = //'sb_publishable_t09-qz4zAoNbHHLvKl2CYg_S8tmhujF';   // Project Settings → API → anon public key
 
 export const SITE_NAME = 'Killfeed';
 
