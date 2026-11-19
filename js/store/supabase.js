@@ -9,6 +9,20 @@ function check({ data, error }) {
   return data;
 }
 
+// columns that are NOT NULL with a default in supabase/schema.sql
+const nowIso = () => new Date().toISOString();
+const NOT_NULL_DEFAULTS = {
+  events: { is_public: true, settings: {}, created_at: nowIso },
+  event_admins: { role: 'admin' },
+  event_teams: { created_at: nowIso },
+  event_matches: { round: 1, slot: 1, best_of: 5, status: 'scheduled', casted: false, checkin: {}, reports: {}, updated_at: nowIso },
+  event_games: { game_no: 1 },
+  event_media: { created_at: nowIso },
+  event_vetoes: { actions: [], status: 'pending', source: 'online', created_at: nowIso, updated_at: nowIso },
+  event_log: { at: nowIso },
+  event_report_shots: { created_at: nowIso },
+};
+
 export class SupabaseStore {
   mode = 'cloud';
 
@@ -107,7 +121,7 @@ export class SupabaseStore {
       const gameRows = games.map(({ stats, match, created_at, ...g }) => ({ ...g, team_id: teamId, match_id: id }));
       check(await this.sb.from('games').upsert(gameRows));
       check(await this.sb.from('stats').delete().in('game_id', games.map(g => g.id)));
-      const statRows = games.flatMap(g => (g.stats || []).map(({ id: _s, ...s }) => ({ ...s, team_id: teamId, game_id: g.id })));
+      const statRows = games.flatMap(g => (g.stats || []).map(({ id: _s, ...s }) => ({ ...s, kills: s.kills ?? 0, deaths: s.deaths ?? 0, team_id: teamId, game_id: g.id })));
       if (statRows.length) check(await this.sb.from('stats').insert(statRows));
     }
     return id;
@@ -240,6 +254,17 @@ export class SupabaseStore {
   }
   async evUpsert(table, rows) {
     rows = [].concat(rows).map(r => (table === 'event_veto_keys' || table === 'event_team_keys' ? (({ id, ...rest }) => rest)(r) : r.id ? r : { ...r, id: uid() }));
+    // When rows in one batch have different fields, Supabase sends the missing ones as null, and null isn't
+    // allowed in these columns. Fill in the same defaults the database would use (schema.sql).
+    const defs = NOT_NULL_DEFAULTS[table];
+    if (defs) {
+      const keys = new Set(rows.flatMap(r => Object.keys(r)));
+      rows = rows.map(r => {
+        const out = { ...r };
+        for (const [k, v] of Object.entries(defs)) if (out[k] == null && (keys.has(k) || k in out)) out[k] = typeof v === 'function' ? v() : structuredClone(v);
+        return out;
+      });
+    }
     if (rows.length) check(await this.sb.from(table).upsert(rows));
     return rows;
   }

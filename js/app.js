@@ -143,7 +143,8 @@ function renderNav() {
   if (!state.user) return;
 
   const top = h('nav', { class: 'nav-links' },
-    h('a', { href: state.team ? teamPath('home') : '#/teams', class: hash.startsWith('#/t/') || hash === '#/teams' ? 'active' : '' }, 'Teams'),
+    // always the team list (create, join, sample team); a team's own pages are on its card and in the switcher
+    h('a', { href: '#/teams', class: hash.startsWith('#/t/') || hash === '#/teams' ? 'active' : '' }, 'Teams'),
     h('a', { href: '#/events', class: hash.startsWith('#/e') ? 'active' : '' }, 'Events'));
   nav.append(top);
 
@@ -162,7 +163,7 @@ function renderNav() {
       onchange: e => e.target.value === '__manage' ? go('#/teams') : go(`#/t/${e.target.value}/home`),
     },
     state.teams.map(t => h('option', { value: t.id, selected: t.id === state.team?.id }, t.tag ? `[${t.tag}] ${t.name}` : t.name)),
-    h('option', { value: '__manage' }, '＋ Manage teams…')));
+    h('option', { value: '__manage' }, '＋ New team, join or sample…')));
   }
   if (inDemoSession()) {
     right.append(h('span', { class: 'pill pill-demo', 'data-tip': 'You are trying the demo. Nothing here is shared or saved to an account.' }, 'Demo'),
