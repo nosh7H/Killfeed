@@ -9,6 +9,8 @@ function check({ data, error }) {
   return data;
 }
 
+const STAFF_UPDATE_TABLES = new Set(['event_matches', 'event_teams']);
+
 // columns that are NOT NULL with a default in supabase/schema.sql
 const nowIso = () => new Date().toISOString();
 const NOT_NULL_DEFAULTS = {
@@ -221,6 +223,31 @@ export class SupabaseStore {
     const r = check(await this.sb.from('event_secrets').select('admin_code').eq('event_id', eventId).maybeSingle());
     return r?.admin_code || null;
   }
+  /** 'owner' | 'admin' | 'staff' | null for the signed-in user. */
+  async eventRole(eventId) {
+    const user = await this.currentUser();
+    if (!user) return null;
+    const r = check(await this.sb.from('event_admins').select('role').eq('event_id', eventId).eq('user_id', user.id).maybeSingle());
+    return r?.role || null;
+  }
+  /** Admin and staff codes (admins only; staff get null). */
+  async eventCodes(eventId) {
+    const r = check(await this.sb.from('event_secrets').select('admin_code, staff_code').eq('event_id', eventId).maybeSingle());
+    return r || null;
+  }
+  async eventMembers(eventId) {
+    const user = await this.currentUser();
+    const rows = check(await this.sb.from('event_admins').select('user_id, role, display_name').eq('event_id', eventId));
+    return rows.map(r => ({ ...r, me: r.user_id === user?.id }));
+  }
+  async setEventMemberRole(eventId, userId, role) {
+    const rows = check(await this.sb.from('event_admins').update({ role }).eq('event_id', eventId).eq('user_id', userId).select());
+    if (!rows?.length) throw new Error('Only event admins can change roles');
+  }
+  async removeEventMember(eventId, userId) {
+    const rows = check(await this.sb.from('event_admins').delete().eq('event_id', eventId).eq('user_id', userId).select());
+    if (!rows?.length) throw new Error('Couldn’t remove them');
+  }
   async isEventAdmin(eventId) {
     const user = await this.currentUser();
     if (!user) return false;
@@ -265,7 +292,19 @@ export class SupabaseStore {
         return out;
       });
     }
-    if (rows.length) check(await this.sb.from(table).upsert(rows));
+    if (!rows.length) return rows;
+    const res = await this.sb.from(table).upsert(rows);
+    // Staff may edit matches and teams but not create them. Postgres checks the insert rule on every
+    // upsert, so for staff save each existing row with a plain update instead.
+    if (res.error && (res.error.code === '42501' || /row-level security/i.test(res.error.message)) && STAFF_UPDATE_TABLES.has(table)) {
+      for (const r of rows) {
+        const { id, ...rest } = r;
+        const done = check(await this.sb.from(table).update(rest).eq('id', id).select('id'));
+        if (!done?.length) throw new Error('Staff can’t add matches or teams — ask an admin');
+      }
+      return rows;
+    }
+    check(res);
     return rows;
   }
   async evDelete(table, ids) {
@@ -284,6 +323,11 @@ export class SupabaseStore {
       }
     }
     check(await this.sb.from(table).delete().in('id', ids));
+  }
+  // game ids in this event that have at least one screenshot
+  async evMediaGameIds(eventId) {
+    const rows = check(await this.sb.from('event_media').select('game_id').eq('event_id', eventId));
+    return [...new Set(rows.map(r => r.game_id))];
   }
   async evListMedia(gameId) {
     return check(await this.sb.from('event_media').select('*').eq('game_id', gameId).order('created_at'));

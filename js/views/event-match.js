@@ -115,7 +115,7 @@ export function eventMatch(matchId) {
         slot(x.game_no).pending.push({ file, url: URL.createObjectURL(file) });
       }
       for (const x of handoff.scores) { const g = slot(x.game_no); if (g.a_score == null && g.b_score == null) { g.a_score = x.a; g.b_score = x.b; } }
-      setTimeout(() => toast(`${handoff.shots.length} captain photo${handoff.shots.length === 1 ? '' : 's'} added — click Read on each to fill player stats, then Save`, 'success'), 300);
+      if (handoff.shots.length) setTimeout(() => toast(`${handoff.shots.length} captain photo${handoff.shots.length === 1 ? '' : 's'} added — click Read on each to fill player stats, then Save`, 'success'), 300);
     }
 
     const wrap = h('div', { class: 'stack' });

@@ -44,8 +44,14 @@ export async function homeView() {
   let filt = JSON.parse(sessionStorage.getItem('kf-home-filt') || '{"type":"","days":0}');
   const modes = () => [...new Set([...(state.team.modes || []), ...state.joined.map(g => g.mode).filter(Boolean)])];
   const root = h('div', { class: 'page home' });
+  // phones get a simple card layout (like the captain screen); "Full view" shows the desktop grid
+  const phoneMq = window.matchMedia('(max-width: 720px)');
+  let fullOnPhone = sessionStorage.getItem('kf-home-full') === '1';
+  const onMq = () => { if (root.isConnected) paint(); else phoneMq.removeEventListener('change', onMq); };
+  phoneMq.addEventListener('change', onMq);
 
   const paint = () => {
+    if (phoneMq.matches && !fullOnPhone && !editing) return paintPhone();
     const games = homeGames(state.joined, filt);
     const L = editing ? draft : layout;
     clear(root).append(...[
@@ -54,7 +60,8 @@ export async function homeView() {
           h('p', { class: 'muted small' }, editing ? 'Drag widgets to reorder, change their size, or open ⚙ to pick the stat and mode.'
             : source === 'me' ? 'Your own layout (only you see it).' : 'Team layout.')),
         h('div', { class: 'actions' }, editing ? editBar() : [
-          h('button', { class: 'btn btn-ghost', onclick: () => { editing = true; draft = structuredClone(layout); paint(); } }, '⚙ Customize'),
+          phoneMq.matches ? h('button', { class: 'btn btn-ghost', onclick: () => { fullOnPhone = false; sessionStorage.removeItem('kf-home-full'); paint(); } }, 'Simple view') : null,
+          phoneMq.matches ? null : h('button', { class: 'btn btn-ghost', onclick: () => { editing = true; draft = structuredClone(layout); paint(); } }, '⚙ Customize'),
           canEdit() ? h('a', { class: 'btn btn-primary', href: teamPath('match/new') }, '＋ Log match') : null])),
       h('div', { class: 'toolbar' },
         h('div', { class: 'seg' }, [['', 'All types'], ...MATCH_TYPES.map(t => [t.id, TYPE_PLURAL[t.id] || t.label])].map(([id, label]) => h('button', { class: filt.type === id ? 'on' : '', onclick: () => setFilt({ type: id }) }, label))),
@@ -65,6 +72,68 @@ export async function homeView() {
       h('div', { class: `home-grid ${editing ? 'editing' : ''}` }, L.widgets.map(w => frame(w, games))),
       editing ? h('button', { class: 'home-add', onclick: addDialog }, '＋ Add widget') : null].filter(Boolean));
   };
+  // ---------- phone ----------
+  const foldOpen = new Set(JSON.parse(sessionStorage.getItem('kf-home-folds') || '[]'));
+  function paintPhone() {
+    const games = homeGames(state.joined, filt);
+    const t = state.team;
+    const series = seriesList(games);
+    const last = series[series.length - 1];
+    const nowIso = new Date().toISOString();
+    const cfg = scheduleCfg(t);
+    const upcoming = (sched.events || []).filter(e => (e.ends_at || e.starts_at) >= nowIso && e.status !== 'cancelled' && e.status !== 'done').sort((a, b) => a.starts_at.localeCompare(b.starts_at));
+    const next = upcoming[0];
+    const when = e => {
+      const d = new Date(e.starts_at), mins = Math.round((d - Date.now()) / 60000);
+      const day = d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+      const time = d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+      const rel = mins <= 0 ? 'Now' : mins < 60 ? `in ${mins} min` : mins < 24 * 60 ? `in ${Math.floor(mins / 60)} h ${mins % 60 ? `${mins % 60} min` : ''}`.trim() : null;
+      return { day, time, rel };
+    };
+    const rec = teamStat('record', games, state.statsIdx), kd = teamStat('kd', games, state.statsIdx), wr = teamStat('winrate', games, state.statsIdx);
+    const typeSel = h('select', { 'aria-label': 'Match type', onchange: e => setFilt({ type: e.target.value }) },
+      [['', 'All types'], ...MATCH_TYPES.map(x => [x.id, TYPE_PLURAL[x.id] || x.label])].map(([id, label]) => h('option', { value: id, selected: filt.type === id }, label)));
+    const daySel = h('select', { 'aria-label': 'Time range', onchange: e => setFilt({ days: +e.target.value }) },
+      [[0, 'All time'], [30, 'Last 30 days'], [14, 'Last 14 days'], [7, 'Last 7 days']].map(([d, label]) => h('option', { value: d, selected: filt.days === d }, label)));
+    const quick = [['matches', 'Matches'], ['schedule', 'Schedule'], ['dashboard', 'Players'], ['notes', 'Notes']];
+    const rest = layout.widgets.filter(w => !['kpis', 'form', 'upcoming'].includes(w.type));
+    const fold = w => h('details', {
+      class: 'card fold ph-fold', open: foldOpen.has(w.id),
+      ontoggle: e => { e.currentTarget.open ? foldOpen.add(w.id) : foldOpen.delete(w.id); sessionStorage.setItem('kf-home-folds', JSON.stringify([...foldOpen])); },
+    }, h('summary', {}, h('strong', {}, widgetTitle(w)), w.cfg.mode ? h('span', { class: 'tag-sm' }, w.cfg.mode) : null),
+    h('div', { class: 'fold-body widget-body' }, (() => { try { return render(w, games); } catch (e) { console.error(e); return h('div', { class: 'empty-sm' }, 'Could not draw this.'); } })()));
+
+    clear(root).append(h('div', { class: 'me-page stack ph-home' },
+      h('div', { class: 'card me-head', style: { '--tc': 'var(--accent)' } },
+        h('div', { class: 'grow' }, h('h1', { class: 'me-name' }, t.name), h('div', { class: 'me-seat' }, [t.tag, `${games.length} map${games.length === 1 ? '' : 's'}`].filter(Boolean).join(' · ')))),
+      // next up
+      h('section', { class: 'card now-card' },
+        next ? [
+          h('div', { class: 'now-top' }, h('span', { class: 'now-state s-ondeck' }, when(next).rel || 'Next up'), h('span', { class: 'muted small' }, `${when(next).day} · ${when(next).time}`)),
+          h('a', { class: 'ph-next', href: teamPath('schedule'), style: { '--ec': eventColor(next, cfg) } }, next.title || (next.opponent ? `vs ${next.opponent}` : 'Event')),
+          upcoming.length > 1 ? h('ul', { class: 'up-list' }, upcoming.slice(1, 4).map(e => h('li', { style: { '--ec': eventColor(e, cfg) } },
+            h('span', { class: 'up-when' }, when(e).day, h('b', {}, when(e).time)),
+            h('a', { href: teamPath('schedule') }, e.title || (e.opponent ? `vs ${e.opponent}` : 'Event'))))) : null,
+        ] : h('div', { class: 'row' }, h('span', { class: 'muted' }, 'Nothing scheduled.'), h('a', { class: 'btn btn-sm', href: teamPath('schedule') }, 'Open schedule'))),
+      // actions
+      h('div', { class: 'stack-sm' },
+        canEdit() ? h('a', { class: 'btn btn-primary btn-big', href: teamPath('match/new') }, '＋ Log match') : null,
+        h('div', { class: 'ph-quick' }, quick.map(([sub, label]) => h('a', { class: 'btn', href: teamPath(sub) }, label)))),
+      // numbers
+      h('section', { class: 'card stack-sm' },
+        h('div', { class: 'ph-filters' }, typeSel, daySel),
+        games.length ? h('div', { class: 'now-facts' },
+          h('div', {}, h('span', { class: 'kpi-label' }, 'Map record'), h('strong', {}, fmtVal(rec.value, rec.fmt)), h('span', { class: 'kpi-sub' }, fmtVal(wr.value, wr.fmt))),
+          h('div', {}, h('span', { class: 'kpi-label' }, 'Team K/D'), h('strong', {}, fmtVal(kd.value, kd.fmt)), h('span', { class: 'kpi-sub' }, kd.sub || '')),
+          last ? h('a', { class: 'ph-last', href: teamPath(`match/${last.match.id}`) }, h('span', { class: 'kpi-label' }, 'Last series'),
+            h('strong', { class: last.result === 'W' ? 'won' : last.result === 'L' ? 'lost' : '' }, `${last.result || '–'} ${last.w}–${last.l}`),
+            h('span', { class: 'kpi-sub' }, `vs ${last.match.opponent || '?'} · ${fmtDate(last.match.played_on)}`)) : null)
+          : h('div', { class: 'empty-sm' }, state.joined.length ? 'No maps in this range.' : 'Nothing logged yet. Log your first match above.'),
+        series.length ? formStrip(series.slice(-10)) : null),
+      ...rest.map(fold),
+      h('button', { class: 'btn btn-ghost btn-sm', onclick: () => { fullOnPhone = true; sessionStorage.setItem('kf-home-full', '1'); paint(); } }, 'Full dashboard view')));
+  }
+
   const setFilt = patch => { filt = { ...filt, ...patch }; sessionStorage.setItem('kf-home-filt', JSON.stringify(filt)); paint(); };
 
   // ---------- edit mode ----------
@@ -107,9 +176,7 @@ export async function homeView() {
   // ---------- widget frame ----------
   function frame(w, games) {
     const def = WIDGETS[w.type];
-    const title = w.type === 'text' ? (w.cfg.title || def.title)
-      : w.type === 'stat' ? TEAM_STATS[w.cfg.stat] || def.title
-        : w.type === 'leaders' || w.type === 'player_bars' ? `${def.title} · ${METRICS[w.cfg.metric]?.label || ''}` : def.title;
+    const title = widgetTitle(w);
     const modeTag = w.cfg.mode ? w.cfg.mode : null;
     let body;
     try { body = render(w, games); } catch (e) { console.error(e); body = h('div', { class: 'empty-sm' }, 'Could not draw this widget.'); }
@@ -266,6 +333,13 @@ export async function homeView() {
 
   paint();
   return root;
+}
+
+function widgetTitle(w) {
+  const def = WIDGETS[w.type];
+  return w.type === 'text' ? (w.cfg.title || def.title)
+    : w.type === 'stat' ? TEAM_STATS[w.cfg.stat] || def.title
+      : w.type === 'leaders' || w.type === 'player_bars' ? `${def.title} · ${METRICS[w.cfg.metric]?.label || ''}` : def.title;
 }
 
 function kpi(label, value, sub) {

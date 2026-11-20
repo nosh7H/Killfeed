@@ -238,6 +238,12 @@ export class LocalStore {
   }
   async getEvent(id) { const e = this.t.events.find(x => x.id === id); return e ? { ...e } : null; }
   async isEventAdmin() { return true; }
+  async eventRole() { return 'owner'; }
+  async eventCodes(id) { const e = this.t.events.find(x => x.id === id); return e ? { admin_code: e.admin_code, staff_code: e.staff_code || null } : null; }
+  async evMediaGameIds(id) { return [...new Set(this.t.event_media.filter(m => m.event_id === id).map(m => m.game_id))]; }
+  async eventMembers() { return [{ user_id: 'me', role: 'owner', display_name: 'You', me: true }]; }
+  async setEventMemberRole() { throw new Error('Staff and co-admins need cloud mode.'); }
+  async removeEventMember() { throw new Error('Staff and co-admins need cloud mode.'); }
   async eventAdminCode(id) { return this.t.events.find(e => e.id === id)?.admin_code || null; }
   async createEvent({ name }) {
     const ev = { id: uid(), name, starts_on: null, venue: null, is_public: true, accent: null, settings: {},

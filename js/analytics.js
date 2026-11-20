@@ -112,6 +112,11 @@ export const FEATURE_INFO = {
   snd_fb_conversion: { label: 'Rounds won after our first blood', fmt: v => `${Math.round(v * 100)}%`, better: 'higher' },
   snd_post_plant_rate: { label: 'Post-plant win % (tagged)', fmt: v => `${Math.round(v * 100)}%`, better: 'higher' },
   snd_retake_rate: { label: 'Retake win % (tagged)', fmt: v => `${Math.round(v * 100)}%`, better: 'higher' },
+  snd_fd_rate: { label: 'First-death rate (tagged)', fmt: v => `${Math.round(v * 100)}%`, better: 'lower' },
+  hj_dunks: { label: 'Our dunks (tagged)', fmt: v => v.toFixed(1), better: 'higher' },
+  hj_throws: { label: 'Our throws (tagged)', fmt: v => v.toFixed(1), better: 'higher' },
+  hj_dunks_against: { label: 'Dunks against us (tagged)', fmt: v => v.toFixed(1), better: 'lower' },
+  hj_hold_share: { label: 'Share of capture time (tagged)', fmt: v => `${Math.round(v * 100)}%`, better: 'higher' },
 };
 
 /**

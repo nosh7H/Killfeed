@@ -1,10 +1,14 @@
-import { h, toast, fmtDate } from '../ui.js';
+import { h, toast, fmtDate, confirmDialog } from '../ui.js';
 import { state, go } from '../state.js';
 import { DEFAULT_EVENT_SETTINGS } from '../event-state.js';
 
 export async function eventsView() {
   const events = await state.store.listEvents();
   const local = state.store.mode === 'local';
+  // practice events: made from the samples (older ones are found by their sample names)
+  const isPractice = e => !!e.settings?.practice || /^Practice · /.test(e.name) || e.name === 'Sample LAN';
+  const practice = events.filter(e => isPractice(e) && e.role === 'owner');
+  const roleName = { owner: 'Owner', admin: 'Admin', staff: 'Staff' };
 
   const name = h('input', { required: true, maxlength: 80, placeholder: 'Winter LAN 2026' });
   const display = h('input', { maxlength: 30, placeholder: 'Your name' });
@@ -15,7 +19,8 @@ export async function eventsView() {
     events.length
       ? h('div', { class: 'list' }, events.map(e => h('a', { class: 'list-row', href: `#/e/${e.id}` },
         h('div', {}, h('strong', {}, e.name), h('div', { class: 'muted small' }, [e.starts_on && fmtDate(e.starts_on), e.venue].filter(Boolean).join(' · ') || 'No date set')),
-        h('span', { class: 'muted small' }, e.role === 'owner' ? 'Owner' : 'Admin'), h('span', { class: 'chev' }, '→'))))
+        isPractice(e) ? h('span', { class: 'chip' }, 'Practice') : null,
+        h('span', { class: 'muted small' }, roleName[e.role] || 'Admin'), h('span', { class: 'chev' }, '→'))))
       : h('p', { class: 'muted' }, 'No events yet. Create one for your LAN — you add the teams, and the groups, bracket, stats and venue display build themselves.'),
     h('div', { class: 'grid-2 gap-lg' },
       h('form', {
@@ -42,12 +47,22 @@ export async function eventsView() {
           } catch (err) { toast(err.message, 'error'); }
         },
       }, h('h3', {}, 'Help run an event'),
-      h('p', { class: 'muted small' }, 'Enter the admin code from the event owner to enter scores and run the queue.'),
-      h('label', {}, 'Admin code', code),
+      h('p', { class: 'muted small' }, 'Enter the staff or admin code the event owner gave you. Staff run matches and scores; admins can change everything.'),
+      h('label', {}, 'Staff or admin code', code),
       h('button', { class: 'btn', type: 'submit' }, 'Join as admin'))),
     h('div', { class: 'panel sample-card' },
       h('div', {}, h('strong', {}, 'Practice runs'),
-        h('p', { class: 'muted small' }, 'Load a made-up LAN with 16 teams and rosters already created, then run it like the real day: control panel, captain links, display. Delete it from Setup when you’re done.')),
+        h('p', { class: 'muted small' }, 'Load a made-up LAN with 16 teams and rosters already created, then run it like the real day: control panel, captain links, display.'),
+        practice.length ? h('button', {
+          class: 'btn btn-sm btn-ghost btn-danger-text', onclick: async e => {
+            if (!(await confirmDialog(`Delete ${practice.length} practice event${practice.length === 1 ? '' : 's'}? ${practice.map(x => x.name).join(', ')}. Your real events stay.`, 'Delete practice events'))) return;
+            const btn = e.target; btn.disabled = true;
+            let done = 0;
+            for (const x of practice) { try { await state.store.deleteEvent(x.id); done++; } catch (err) { toast(`${x.name}: ${err.message}`, 'error'); } }
+            toast(`Deleted ${done} practice event${done === 1 ? '' : 's'}`, 'success');
+            go('#/events');
+          },
+        }, `Delete all practice events (${practice.length})`) : null),
       h('div', { class: 'sample-opts' }, [
         ['start', 'Start of event', 'Teams, groups, seating and captain links ready. Nothing played.'],
         ['mid', 'Mid group stage', 'Morning session on its last round: live and on-deck matches.'],

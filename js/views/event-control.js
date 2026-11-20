@@ -62,12 +62,44 @@ export function eventControl() {
   let showFinal = false;
   const photoState = new Map(); // match id → loaded captain photos + what was read from them
   let pending = false; // a repaint arrived while someone was typing
+  let qFilter = '', qTimer = null;
+  let remoteOpen = (() => { try { return localStorage.getItem('kf-remote-open') !== ''; } catch { return true; } })() && !window.matchMedia('(max-width: 640px)').matches;
+  let chime = (() => { try { return localStorage.getItem('kf-chime') === '1'; } catch { return false; } })();
+  let seen = null; // staff calls + disputes already seen, so only new ones alert
+  const anchor = id => h('span', { id, class: 'cp-anchor' });
+  const baseTitle = document.title;
+  function alertNew(calls, disputes) {
+    const keys = new Set([...calls.map(t => `c:${t.id}:${t.help.at}`), ...disputes.map(([g]) => `d:${g.id}`)]);
+    const fresh = seen ? [...keys].filter(k => !seen.has(k)) : [];
+    seen = keys;
+    const n = calls.length + disputes.length;
+    document.title = n ? `(${n}) ${baseTitle.replace(/^\(\d+\) /, '')}` : baseTitle.replace(/^\(\d+\) /, '');
+    if (fresh.length) {
+      toast(fresh.some(k => k.startsWith('c:')) ? 'New staff call' : 'New disputed map', 'error');
+      if (chime) beep();
+      navigator.vibrate?.(200);
+    }
+  }
+  function beep() {
+    try {
+      const a = new (window.AudioContext || window.webkitAudioContext)();
+      [0, 0.18].forEach(t => { const o = a.createOscillator(), g = a.createGain(); o.frequency.value = 880; g.gain.setValueAtTime(0.15, a.currentTime + t); g.gain.exponentialRampToValueAtTime(0.001, a.currentTime + t + 0.15); o.connect(g).connect(a.destination); o.start(a.currentTime + t); o.stop(a.currentTime + t + 0.16); });
+    } catch {}
+  }
   // older events: give every match a permanent number (once)
   const unnumbered = numberMatches(ev.data.matches);
-  if (unnumbered.length) state.store.evUpsert('event_matches', unnumbered).then(refreshEvent).then(() => paint()).catch(() => {});
+  if (unnumbered.length && ev.manager) state.store.evUpsert('event_matches', unnumbered).then(refreshEvent).then(() => paint()).catch(() => {});
 
-  const paint = () => {
-    if (root.contains(document.activeElement) && document.activeElement.matches('input, select, textarea')) { pending = true; return; }
+  const paint = (force = false) => {
+    const a = document.activeElement;
+    if (a?.matches('.q-filter') && root.contains(a)) { // the queue search never holds back live updates
+      const pos = a.selectionStart; paintNow();
+      const el = root.querySelector('.q-filter'); el?.focus(); el?.setSelectionRange(pos, pos); return;
+    }
+    if (!force && root.contains(a) && a.matches('input, select, textarea')) { pending = true; return; }
+    paintNow();
+  };
+  const paintNow = () => {
     pending = false;
     const s = ev.settings;
     const gbm = gamesByMatch(ev.data.games);
@@ -82,31 +114,51 @@ export function eventControl() {
     const reported = ev.data.matches.filter(m => m.reports && Object.values(m.reports).some(x => x?.shots?.length))
       .sort((x, y) => (x.status === 'final' ? 0 : 1) - (y.status === 'final' ? 0 : 1) || (x.match_no || 0) - (y.match_no || 0));
     const disputes = ev.data.games.filter(g => g.win_check === 'disputed').map(g => [g, ev.data.matches.find(m => m.id === g.match_id)]).filter(([, m]) => m);
+    const nMissing = missingRows().reduce((n, x) => n + x.maps.length, 0);
+    alertNew(calls, disputes);
+    const qShown = qFilter ? q.filter(m => { const r = ev.resolved.get(m.id) || {}; return [r.A, r.B].some(id => { const t = ev.teamById.get(id); return t && `${t.name} ${t.tag || ''}`.toLowerCase().includes(qFilter); }) || String(m.match_no || '') === qFilter.replace('#', ''); }) : q;
+    const jump = (id, n, label, cls = '') => n ? h('a', { class: `nb-chip ${cls}`, href: `#${id}`, onclick: e => { e.preventDefault(); const el = document.getElementById(id); if (el?.tagName === 'DETAILS') el.open = true; el?.scrollIntoView({ behavior: 'smooth', block: 'start' }); } }, h('b', {}, n), ' ', label) : null;
+    const needs = [
+      jump('cp-calls', calls.length, calls.length === 1 ? 'staff call' : 'staff calls', 'hot'),
+      jump('cp-disputes', disputes.length, disputes.length === 1 ? 'dispute' : 'disputes', 'hot'),
+      jump('cp-coins', ev.coinsNeeded.length, ev.coinsNeeded.length === 1 ? 'coin flip' : 'coin flips', 'warn'),
+      jump('cp-deck', ondeck.length, 'on deck'),
+      jump('cp-live', live.length, 'live'),
+      jump('cp-photos', reported.length, 'photos to review'),
+      jump('cp-missing', nMissing, nMissing === 1 ? 'map missing stats' : 'maps missing stats'),
+    ].filter(Boolean);
     clear(root).append(eventShell('control', h('div', { class: 'stack' },
-      ev.coinsNeeded.length ? h('div', { class: 'notice warn' }, h('strong', {}, '🪙 Coin flip needed: '),
+      h('div', { class: 'needs-bar' }, needs.length ? needs : h('span', { class: 'muted small' }, 'All clear. Nothing waiting on staff.'),
+        h('span', { class: 'spacer' }),
+        h('button', { class: `icon-btn ${chime ? 'on' : ''}`, 'aria-label': chime ? 'Sound on for staff calls' : 'Sound off for staff calls', 'data-tip': chime ? 'Chime on for new staff calls and disputes' : 'Turn on a chime for new staff calls and disputes',
+          onclick: () => { chime = !chime; try { localStorage.setItem('kf-chime', chime ? '1' : ''); } catch {} if (chime) beep(); paint(); } }, chime ? '🔔' : '🔕')),
+      ev.coinsNeeded.length ? h('div', { class: 'notice warn', id: 'cp-coins' }, h('strong', {}, '🪙 Coin flip needed: '),
         ev.coinsNeeded.map(c => `${c.where} (${c.ids.map(teamName).join(' vs ')})`).join(' · '), ' ',
         h('a', { href: eventPath('setup') }, 'Settle it in Setup → Tiebreakers')) : null,
-      calls.length ? h('section', { class: 'block calls' }, h('div', { class: 'block-head' }, h('h2', {}, `Staff called (${calls.length})`)),
+      calls.length ? h('section', { class: 'block calls', id: 'cp-calls' }, h('div', { class: 'block-head' }, h('h2', {}, `Staff called (${calls.length})`)),
         calls.map(t => h('div', { class: 'call-row' }, h('span', { class: 'pulse-dot' }), teamBadge(t.id, 'sm'), h('strong', {}, t.name),
           h('span', {}, t.row_no != null ? `${ev.settings.seating.label || 'Row'} ${t.row_no}` : ''),
           h('span', { class: 'muted' }, `${t.help.note} · ${minsAgo(t.help.at)}`), h('span', { class: 'spacer' }),
           h('button', { class: 'btn btn-sm btn-primary', 'data-submit': '', onclick: async () => { await state.store.evUpsert('event_teams', { ...t, help: null }); await refreshEvent(); paint(); toast(`${t.name}: handled`); } }, 'Done')))) : null,
-      disputes.length ? h('section', { class: 'block calls' }, h('div', { class: 'block-head' }, h('h2', {}, `Disputed maps (${disputes.length})`),
+      disputes.length ? h('section', { class: 'block calls', id: 'cp-disputes' }, h('div', { class: 'block-head' }, h('h2', {}, `Disputed maps (${disputes.length})`),
         h('span', { class: 'muted small' }, 'A captain says the other team’s tap was wrong. The result stands until you pick.')),
         disputes.map(([g, m]) => disputeCard(g, m))) : null,
       remote(),
       clashes.length ? h('div', { class: 'alert alert-warn' }, h('strong', {}, 'Seating clash: '),
         clashes.map(c => (c.team ? `${teamName(c.team)} is in two live matches` : `${c.key} has two live matches`)).join(' · ')) : null,
-      panel(`Live now (${live.length})`, 'Captains tap who won each map from their phones. If they don’t, click it here. The series count updates on the display right away.',
+      anchor('cp-live'), panel(`Live now (${live.length})`, 'Captains tap who won each map from their phones. If they don’t, click it here. The series count updates on the display right away.',
         live.length ? h('div', { class: 'cp-grid' }, live.map(m => liveCard(m, gbm.get(m.id) || [], bm))) : h('div', { class: 'empty-sm' }, 'No live matches. Start one from On deck or the queue.')),
-      ondeck.length ? panel(`On deck (${ondeck.length})`, 'Teams are called to their rows. Start when they are ready.',
+      ondeck.length ? anchor('cp-deck') : null, ondeck.length ? panel(`On deck (${ondeck.length})`, 'Teams are called to their rows. Start when they are ready.',
         h('div', { class: 'cp-grid cp-grid-sm' }, ondeck.map(m => deckCard(m, bm)))) : null,
       panel('Queue', 'Live first, then on deck, then scheduled. Group matches use each team’s pinned rows; bracket matches use the row set here.',
-        q.length ? h('div', { class: 'table-wrap' }, h('table', { class: 'data queue-table' },
+        q.length > 6 || qFilter ? h('input', { class: 'q-filter', type: 'search', placeholder: 'Find a team or match #', value: qFilter, 'aria-label': 'Filter the queue',
+          oninput: e => { qFilter = e.target.value.trim().toLowerCase(); clearTimeout(qTimer); qTimer = setTimeout(() => paint(), 150); } }) : null,
+        qShown.length ? h('div', { class: 'table-wrap' }, h('table', { class: 'data queue-table' },
           h('thead', {}, h('tr', {}, h('th', {}, '#'), h('th', {}, 'Match'), h('th', {}, 'Where'), h('th', {}, 'Veto'), h('th', {}, 'Status'), h('th', {}))),
-          h('tbody', {}, q.map((m, i) => queueRow(m, i, q, bm))))) : h('div', { class: 'empty-sm' }, 'Nothing waiting. Generate group matches in Setup.')),
-      reported.length ? panel(`Scoreboard photos to review (${reported.length})`, 'Captains’ photos of each map. Results already count from their taps, so do these after the round: save the scores, or open the editor for player stats.',
+          h('tbody', {}, qShown.map(m => queueRow(m, q.indexOf(m), q, bm))))) : h('div', { class: 'empty-sm' }, qFilter ? 'No matches for that search.' : 'Nothing waiting. Generate group matches in Setup.')),
+      reported.length ? anchor('cp-photos') : null, reported.length ? panel(`Scoreboard photos to review (${reported.length})`, 'Captains’ photos of each map. Results already count from their taps, so do these after the round: save the scores, or open the editor for player stats.',
         h('div', { class: 'stack-sm' }, reported.map(m => reportCard(m, bm)))) : null,
+      missingStatsPanel(bm),
       panel(`Completed (${finals.length})`, null,
         h('button', { class: 'btn btn-sm btn-ghost', onclick: () => { showFinal = !showFinal; paint(); } }, showFinal ? 'Hide' : 'Show'),
         showFinal ? h('div', { class: 'list' }, finals.map(m => {
@@ -117,16 +169,66 @@ export function eventControl() {
         })) : null))));
   };
 
+  // ---------- maps that have a winner but no player stats yet ----------
+  let mediaGames = null; // Set of game ids with a screenshot (loaded once, refreshed after saves)
+  let missingOpen = false;
+  function missingRows() {
+    if (!mediaGames) {
+      mediaGames = new Set();
+      state.store.evMediaGameIds(ev.event.id).then(ids => { mediaGames = new Set(ids); paint(); }).catch(() => {});
+    }
+    const withStats = new Set(ev.data.stats.map(x => x.game_id));
+    const matchById = new Map(ev.data.matches.map(m => [m.id, m]));
+    const rows = [];
+    for (const [mid, games] of gamesByMatch(ev.data.games)) {
+      const m = matchById.get(mid);
+      if (!m) continue;
+      const shotsFor = new Set(Object.values(m.reports || {}).flatMap(x => (x?.shots || []).map(sh => sh.game_no ?? sh)));
+      const maps = games.filter(g => gameWinner(g) && !withStats.has(g.id)).sort((a, b) => a.game_no - b.game_no);
+      if (!maps.length) continue;
+      const photo = maps.filter(g => mediaGames.has(g.id) || shotsFor.has(g.game_no));
+      rows.push({ m, maps, photo, pending: shotsFor.size > 0 });
+    }
+    return rows;
+  }
+  function missingStatsPanel(bm) {
+    const rows = missingRows();
+    if (!rows.length) return null;
+    rows.sort((x, y) => (y.photo.length ? 1 : 0) - (x.photo.length ? 1 : 0) || (x.m.match_no || 0) - (y.m.match_no || 0));
+    const nMaps = rows.reduce((n, x) => n + x.maps.length, 0);
+    const nPhoto = rows.reduce((n, x) => n + x.photo.length, 0);
+    const open = async x => {
+      const shots = x.pending ? await state.store.reportShots(x.m.id) : [];
+      ev.handoff = { matchId: x.m.id, shotIds: shots.map(sh => sh.id), shots: await Promise.all(shots.map(async sh => ({ game_no: sh.game_no, blob: await (await fetch(sh.image)).blob() }))), scores: [] };
+      mediaGames = null; // reload after the editor saves
+      go(eventPath(`match/${x.m.id}`));
+    };
+    return h('details', { class: 'block', id: 'cp-missing', open: missingOpen, ontoggle: e => { missingOpen = e.currentTarget.open; } },
+      h('summary', {}, h('strong', {}, `Missing stats (${nMaps} map${nMaps === 1 ? '' : 's'})`),
+        h('span', { class: 'muted small' }, ` · ${nPhoto} with a scoreboard photo ready to read`)),
+      h('p', { class: 'small muted' }, 'Maps with a winner but no player stats. The ones with photos are first: open the match, click Read on each photo, then Save.'),
+      h('div', { class: 'table-wrap' }, h('table', { class: 'data tight' },
+        h('thead', {}, h('tr', {}, h('th', {}, 'Match'), h('th', {}, 'Maps'), h('th', {}, 'Photos'), h('th', {}))),
+        h('tbody', {}, rows.map(x => {
+          const r = ev.resolved.get(x.m.id) || {};
+          return h('tr', {},
+            h('td', {}, x.m.match_no ? h('span', { class: 'muted' }, `#${x.m.match_no} `) : null, `${teamTag(r.A)} vs ${teamTag(r.B)}`, h('span', { class: 'muted small' }, ` · ${roundName(x.m, bm)}`)),
+            h('td', {}, x.maps.map(g => `M${g.game_no}`).join(' ')),
+            h('td', {}, x.photo.length ? h('span', { class: 'chip' }, `📷 ${x.photo.map(g => `M${g.game_no}`).join(' ')}`) : h('span', { class: 'muted small' }, 'none')),
+            h('td', {}, h('button', { class: `btn btn-sm ${x.photo.length ? 'btn-primary' : ''}`, onclick: () => open(x) }, 'Enter stats')));
+        })))));
+  }
+
   // ---------- display remote ----------
   function remote() {
     const d = ev.settings.display;
     const label = k => (k.startsWith('kd:') ? `K/D · ${k.slice(3)}` : { seating: 'Seating chart', live: 'Live matches', groups: 'Group standings', teams: 'Team stats', bracket: 'Bracket', queue: 'Live and up next', awards: 'Awards' }[k] || k);
     const msg = h('input', { placeholder: 'Announcement, e.g. "Lunch break — back at 1:00"', value: d.announce?.text || '', maxlength: 120, class: 'grow' });
-    return h('section', { class: 'block cp-remote' },
-      h('div', { class: 'block-head' }, h('h2', {}, 'Display remote'),
-        h('span', { class: 'muted small' }, d.pin ? `Pinned: ${d.pin === 'veto' ? 'Map veto' : label(d.pin)}` : d.paused ? 'Paused' : `Rotating every ${d.seconds}s`),
-        h('a', { class: 'btn btn-ghost btn-sm', href: `#/display/${ev.event.id}`, target: '_blank', rel: 'noopener' }, 'Open display ↗')),
-      h('div', { class: 'row wrap' },
+    return h('details', { class: 'block cp-remote', open: remoteOpen, ontoggle: e => { remoteOpen = e.currentTarget.open; try { localStorage.setItem('kf-remote-open', remoteOpen ? '1' : ''); } catch {} } },
+      h('summary', {}, h('strong', {}, 'Display remote'),
+        h('span', { class: 'muted small' }, ' · ', d.announce ? 'Announcement showing · ' : '', d.pin ? `Pinned: ${d.pin === 'veto' ? 'Map veto' : label(d.pin)}` : d.paused ? 'Paused' : `Rotating every ${d.seconds}s`)),
+      h('div', { class: 'row wrap', style: { marginTop: '.7rem' } },
+        h('a', { class: 'btn btn-ghost btn-sm', href: `#/display/${ev.event.id}`, target: '_blank', rel: 'noopener' }, 'Open display ↗'),
         h('select', {
           'aria-label': 'What the display shows',
           onchange: async e => { await saveDisplay({ pin: e.target.value || null, pin_veto: null }); toast(e.target.value ? 'Display pinned' : 'Display rotating'); },
@@ -609,7 +711,7 @@ export function eventSeating() {
         }, 'Save layout'))));
 
     clear(root).append(eventShell('seating', h('div', { class: 'stack' },
-      planPanel,
+      ev.manager ? planPanel : h('p', { class: 'small muted' }, 'Staff can swap teams between rows and switch the session that’s playing. The session plan and room layout are for admins.'),
       chartPanel,
       panel('Bracket seating', 'Every team in a bracket match gets its own row. Matches get rows automatically when you start them; set them earlier here.',
         bracketOpen.length || bmAll.some(m => m.status === 'live') ? h('div', { class: 'bracket-seat' },
@@ -649,7 +751,7 @@ export function eventSeating() {
               })))),
           seatHelper(bmAll))
           : h('div', { class: 'empty-sm' }, 'No open bracket matches yet. Generate playoffs in Setup.')),
-      layoutPanel)));
+      ev.manager ? layoutPanel : null)));
 
     // the room during the bracket: who sits on each row now, and who's coming
     function bracketRowBoard(bm) {

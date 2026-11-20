@@ -31,7 +31,7 @@ export const SAMPLE_STAGES = {
 export async function loadSampleEvent(store, teamCount = 16, name = null, stage = 'playoffs') {
   name ||= SAMPLE_STAGES[stage] || 'Sample LAN';
   const event = await store.createEvent({ name, display_name: 'You' });
-  const settings = { ...DEFAULT_EVENT_SETTINGS, maps: MAPS };
+  const settings = { ...DEFAULT_EVENT_SETTINGS, maps: MAPS, practice: true };
   await store.updateEvent(event.id, { settings, starts_on: new Date().toLocaleDateString('en-CA'), venue: 'Main hall' });
   const e = event.id;
 

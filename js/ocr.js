@@ -1,7 +1,7 @@
 // In-browser OCR with Tesseract.js (loaded from CDN only when first used).
 let loading = null;
 
-function loadTesseract() {
+export function loadTesseract() {
   if (window.Tesseract) return Promise.resolve(window.Tesseract);
   if (!loading) {
     loading = new Promise((res, rej) => {

@@ -66,7 +66,9 @@ export const ev = {
   settings: null,
   data: null,
   isAdmin: false,      // admin powers on this page (false while an admin previews another role)
-  realAdmin: false,    // the signed-in user really is an event admin
+  realAdmin: false,    // the signed-in user really is an event admin (owner, admin or staff)
+  memberRole: null,    // 'owner' | 'admin' | 'staff'
+  manager: false,      // owner or admin: setup, teams, groups, seeding, captain links, members
   staffName: null,     // this admin's name in the activity log
   role: 'viewer',      // 'admin' | 'captain' | 'player' | 'viewer'
   myTeam: null,        // team id for players and captains
@@ -93,6 +95,7 @@ export async function loadEvent(id, { force = false } = {}) {
   if (!event) return null;
   ev.event = event;
   ev.realAdmin = state.user ? await state.store.isEventAdmin(id) : false;
+  ev.memberRole = ev.realAdmin ? (await state.store.eventRole?.(id).catch(() => 'admin')) || 'admin' : null;
   if (ev.realAdmin) {
     installEventLog();
     ev.staffName = await state.store.myEventName?.(id).catch(() => null) || 'Staff';
@@ -122,15 +125,27 @@ export async function resolveRole() {
   const params = new URLSearchParams(location.hash.split('?')[1] || '');
   const urlKey = params.get('cap');
   if (urlKey) {
-    store.set(lsKey('cap'), urlKey);
     params.delete('cap');
     const clean = location.hash.split('?')[0] + (params.toString() ? `?${params}` : '');
     history.replaceState(null, '', clean);
+    if (ev.realAdmin) {
+      // an admin opening a captain link (e.g. testing it): show exactly what that captain sees, as a preview
+      const team = await state.store.captainTeam(id, urlKey).catch(() => null);
+      if (team && ev.teamById.has(team)) {
+        try { sessionStorage.setItem(lsKey('preview'), JSON.stringify({ role: 'captain', team })); } catch { /* ignore */ }
+        toastLater(`Showing ${teamName(team)}’s captain screen. You’re an admin: “Exit preview” takes you back.`, 'info');
+      } else toastLater('That captain link isn’t valid any more.');
+    } else store.set(lsKey('cap'), urlKey);
   }
   ev.preview = (() => { try { return JSON.parse(sessionStorage.getItem(lsKey('preview')) || 'null'); } catch { return null; } })();
   if (!ev.realAdmin) ev.preview = null;
-  ev.isAdmin = ev.realAdmin && !ev.preview;
+  // "Preview as Staff": an admin sees the event the way a staff member does
+  const staffPreview = ev.preview?.role === 'staff';
+  ev.isAdmin = ev.realAdmin && (!ev.preview || staffPreview);
+  // managers (owner / admin) do setup; staff run matches
+  ev.manager = ev.isAdmin && ['owner', 'admin'].includes(ev.memberRole) && !staffPreview;
   ev.captainKey = null; ev.myTeam = null; ev.role = 'viewer';
+  if (staffPreview) { ev.role = 'admin'; return; }
 
   if (ev.preview) {
     ev.role = ev.preview.role;
@@ -154,7 +169,7 @@ export async function resolveRole() {
   const picked = store.get(lsKey('team'));
   if (picked && ev.teamById.has(picked)) { ev.role = 'player'; ev.myTeam = picked; }
 }
-function toastLater(msg) { setTimeout(() => import('./ui.js').then(m => m.toast(msg, 'error')), 300); }
+function toastLater(msg, kind = 'error') { setTimeout(() => import('./ui.js').then(m => m.toast(msg, kind)), 300); }
 
 /** Player: "this is my team" on this device (null = just watching). */
 export function setMyTeam(teamId) {

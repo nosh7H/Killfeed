@@ -23,6 +23,8 @@ import { eventLog } from './views/event-log.js';
 import { eventMe } from './views/event-me.js';
 import { eventMatch } from './views/event-match.js';
 import { displayView } from './views/display.js';
+import { overlayView } from './views/overlay.js';
+import { eventOverlays } from './views/event-overlays.js';
 import { vetoView } from './views/veto.js';
 import { loadEvent, ev } from './event-state.js';
 import { initTooltips } from './tooltip.js';
@@ -59,6 +61,7 @@ const publicRoutes = [
   [/^#\/e\/([^/]+)\/control$/, (_, id) => withEvent(id, eventControl)],
   [/^#\/e\/([^/]+)\/seating$/, (_, id) => withEvent(id, eventSeating)],
   [/^#\/e\/([^/]+)\/screens$/, (_, id) => withEvent(id, eventScreens)],
+  [/^#\/e\/([^/]+)\/overlays$/, (_, id) => withEvent(id, eventOverlays)],
   [/^#\/e\/([^/]+)\/log$/, (_, id) => withEvent(id, eventLog)],
   [/^#\/e\/([^/]+)\/me$/, (_, id) => withEvent(id, eventMe)],
   [/^#\/veto\/([^/]+)$/, (_, id) => { markVisitor(); return vetoView(id); }],
@@ -84,6 +87,9 @@ async function route() {
   const disp = hash.match(/^#\/display\/([^/]+)$/);
   document.body.classList.toggle('display-mode', !!disp);
   if (disp) { ev.unsub?.(); mount(await displayView(disp[1], new URLSearchParams(query))); return; }
+  const ovl = hash.match(/^#\/overlay\/([^/]+)(?:\/([^/]+))?$/);
+  document.body.classList.toggle('overlay-mode', !!ovl);
+  if (ovl) { ev.unsub?.(); document.body.classList.add('display-mode'); mount(await overlayView(ovl[1], ovl[2])); return; }
   if (!hash.startsWith('#/e/') && !hash.startsWith('#/veto/')) ev.unsub?.();
   renderNav();
   for (const [re, fn] of publicRoutes) {

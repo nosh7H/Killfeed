@@ -19,6 +19,8 @@ A static website for Call of Duty teams to log scrims and matches, upload scoreb
 
 ## Team home
 
+- **On phones** Team home switches to a simple layout, like the captain screen: what's next on the schedule (with a countdown), a big **Log match** button, shortcuts to Matches, Schedule, Players and Notes, the record, K/D, last series and form, and every other widget as a section you tap open. **Full dashboard view** at the bottom shows the desktop grid; customizing the layout is done on a computer.
+
 **Home** is the first page of each team. It's a dashboard of widgets you arrange yourself:
 - **Widgets:** key numbers, a single stat tile (pick the stat and mode), recent form, team K/D trend, win rate by mode, map win rates for one mode, top players for any stat, a player comparison chart, the next events from the schedule, recent matches, pinned notes, S&D round stats and hill-by-hill stats from tagged VODs, and a free-text team message.
 - **Filters:** match type (scrims, matches…) and period (all time, 30, 14 or 7 days) apply to every widget.
@@ -53,6 +55,37 @@ Tags autosave, and the stats update on their own in **Insights**:
 
 Hijack only has free event tags for now.
 
+### Auto-timestamp (Hardpoint and S&D first, Hijack basic)
+
+In **Map breakdown**, pick **Player POV** or **CODCaster**, then **Scan VOD**. It reads the HUD off a **local video file** in your browser; nothing is uploaded. YouTube and Twitch players can't be read, so use **Open video file to scan** for those maps.
+
+1. **Mark the boxes once.** Pick a frame where the HUD shows and drag a box over our score and their score (S&D also uses the killfeed and the centre banner). The black-on-white previews are what gets read. Boxes are saved for your team, per source.
+2. **Scan.** It reads every second (or every 2 for speed), skipping boxes that haven't changed. Expect a minute or two for a 10-minute map.
+3. **Review, then Apply.** It shows what it found, checks the final score against the map score, and for S&D compares the killfeed with the scoreboard stats.
+
+What it tags:
+- **Hardpoint:** each hill's start time, who rotated first, held, broken, broke them or lost clean, and points per hill.
+- **S&D:** every round with its result, first blood and first death (with the player), our kills and deaths from the killfeed, and plants/defuses from the banner.
+- **Hijack:** dunks (+30) and throws (+15) for each team from score jumps, plus capture time (+1 a second).
+
+Every mode gets a **score chart** for the map: both teams' score over time, with hill or round starts marked. Click it to jump the video there.
+
+How the source changes things:
+- **CODCaster:** the HUD is always on screen, so every clean read counts.
+- **Player POV:** a value only counts once the next reading agrees with it. Anything decided while the HUD was hidden (deathcam, killcam) is marked **unsure** so you can check it. Each team's score is checked on its own, so one misread box doesn't stop the other side.
+
+**Full-series VODs:** set **Maps in this VOD** (1 to 7) before scanning.
+- It splits the video wherever the score resets to 0–0 after a map. The lobby gap with no HUD helps confirm each change. If it finds more resets than maps, the clearest ones win.
+- The parts go to this scrim's maps in order, starting with the map you opened. You can change any of them on the review screen.
+- Each part is tagged with the mode logged for that map: Hardpoint, S&D or Hijack. Other modes are only used for splitting.
+- The review shows each map's time range in the video, the score read next to the logged score, a tag summary and the end-of-map scoreboard frame. Use ◀ ▶ to move the frame.
+- **Apply to N maps** saves every map's breakdown, keeping hand-tagged ones. It then sends each scoreboard frame to its map in the match editor, where **Read** fills that map's player stats.
+- Tags keep the real time in the full video, so link the same series VOD on each map.
+
+Hand tags still work: hotkeys, buttons and VOD review notes are unchanged. Scanned tags have a small dot. Edit one and it becomes yours. **Scan again** replaces only the scanned tags you haven't touched.
+
+Final kills, deaths and hill time come from the scoreboard. **Use a frame as the scoreboard screenshot** sends the end-of-map scoreboard frame to this map in the match editor, where **Read** fills the player stats.
+
 ## Schedule and time off
 
 **Schedule** (team nav):
@@ -76,7 +109,9 @@ Times are stored in UTC and shown in each person's local time.
   - **Player:** picks their team on the event page, with no login. **My team** is one simple card: where they sit, when they play (estimate, or how long their break lasts), the series score and each map's result. Their matches, roster and stats are folded away underneath.
   - **Captain photos:** each map has an optional **📷** button that opens the phone camera, including right after the match ends. Photos never hold anything up: staff review them after the round in the Control panel (**Scoreboard photos to review**): **Read scores from photos**, **Save photo scores** (it warns if a photo says the other team won a map), or **Scores + player stats in editor**. Player stats are entered by staff only. Photos go through a checked database function (captain key, JPEG only, size and count limits), and only admins can see them.
   - **Captain:** opens their team's private captain link (Setup → **Roles & captain links**: create, copy, print slips, or make a new link if one leaks). Their screen only ever shows the next thing to do: **We're ready** → **map veto** (when it's their turn) → for each map, **We won / They won**, with an optional 📷. A tap counts right away: the series, groups, bracket and display update with no staff approval. The other captain sees each tap and can say **✓ Right** or **✗ Wrong**. A dispute goes to staff, and the result stands until staff pick the winner. Captains can also **call staff** and fix their roster. They never type scores or stats.
-  - **Admin / staff:** everything below. **Preview as** (top right) shows the site as a viewer, or as a player or captain of any team.
+  - **Staff** (join with the **staff code**): run matches: start/finish, map winners, approve scores and photos, enter player stats, coin flips, the display, staff calls, swapping teams between rows and switching the current session. Staff can't change teams, groups, seeding, times or the session plan, and can't delete anything. The database enforces this, not just the screens.
+  - **Admin** (join with the **admin code**): everything. Admins see both codes and the member list in **Setup → Roles & captain links → Staff & admins**, where they can switch someone between Staff and Admin or remove them. Hand out the staff code; keep the admin code for people you trust.
+  - **Preview as** (top right) shows the site as a viewer, a player or captain of any team, or staff.
   - Security: captain actions go through database functions that check the captain key (`captain_*`, and `veto_act` accepts the captain key too). Keys can only be read by event admins.
 - **Admin view.** Admins see a **Public view | Admin** switch on every event page. The admin side has its own tabs (**Control panel**, **Rows**, **Display**, **Activity**, **Setup**) and is never shown to the public.
 - **Control panel** (staff):
@@ -114,11 +149,30 @@ Times are stored in UTC and shown in each person's local time.
   - Teams that are through see **✓ Qualified for Sunday**: "you're done for today", or "one more match today, win or lose". The event Overview lists every qualified team. Sunday matches are tagged "Sun", and their estimates start from the final-day start time.
 - **Event links don't reach the team analytics.** People who open an event without signing in (viewers, players, captains) only see the event: no Teams tab, and the logo goes back to the event. On that browser the sign-in page becomes a plain **Staff sign in** with no demo and no sign-up. For a hard lock, also turn off sign-ups in Supabase (Authentication → Sign In / Providers → **Allow new users to sign up** off) and invite your organization's members yourself, and set `SHOW_DEMO = false` in `js/config.js`.
 - **Match numbers**: every match gets a permanent number for your records (group matches 1, 2, 3 … in play order, then the bracket continues from there). It shows on match pages, the queue, the bracket boxes and the Control panel, and every CSV export has a `match_no` column. Older events are numbered the first time an admin opens the Control panel.
+- **Stream overlays** (admin and staff tab): OBS browser sources that sit on top of the CODCaster POV.
+  - **What it adds:** each team's **name and logo** over the CODCaster name bars and centre logo spots, a **match title** (round · map) and the **series score**. The game already shows the map score; the series score shows maps won, as numbers or best-of pips. Optionally the event name.
+  - **Bottom bar:** scrolls the **live matches** (maps won only, like *TEAM A 1–1 TEAM B*), **previous results**, and the **top 5 stat leaders**. You pick the stat (K/D, kills, kills per map, damage per map), the number of players and the minimum maps.
+  - **Which match:** **Automatic** follows the live match marked **Casted** in the Control panel, then any live match, then whoever is on deck, and moves on by itself. You can also pin a station to one match. **Swap sides** flips the teams if the CODCaster has them the other way round.
+  - **Customizing:** drag and resize every element in the preview, including the small name-plate logos (their own elements now), or type exact positions. Arrow keys nudge (Shift for bigger steps).
+    - Edges and centres snap to other elements and to the middle of the frame. Hold **Alt** to place freely.
+    - **Zoom** the preview to 150, 200 or 300% for fine work. **Undo / Redo** each step (Ctrl+Z / Ctrl+Shift+Z).
+    - Each element has its own **text size**. Names and the title can be aligned left, centre or right. Name plates have **space for the logo**. Logos can show whole, fill the box or stretch.
+    - **Live to OBS** sends every change straight to the stream, so you can line things up against the real CODCaster feed in the OBS preview instead of a screenshot.
+    - Upload a CODCaster screenshot to line things up, and **zoom / move the screenshot** if it has black bars or is slightly off. It stays on your computer and never shows on stream.
+    - **Reset this element**, **Reset all**, or **Copy layout from** another stream. Change name style, plate colours (each team's colour or one colour), opacity, text colour and size, capitals, and the bar's colours and speed.
+  - **Multiple streams:** **Add a stream** for each station. Each has its own OBS link, match and layout.
+  - **In OBS:** Sources → Browser, paste the OBS link, 1920×1080, above the CODCaster capture. Untick "Shutdown source when not visible". Saved changes and new scores reach the stream within a few seconds. The event must be public.
+- **Control panel quality of life:**
+  - A bar at the top lists what needs staff right now (staff calls, disputes, coin flips, on deck, live, photos to review, maps missing stats). Tap one to jump to it. It stays pinned while you scroll on a computer.
+  - New staff calls and disputes pop a notice, vibrate phones, and put a count in the browser tab, like **(2) Killfeed**. Turn on the 🔔 chime in the bar if you want a sound.
+  - **Find a team or match #** above the queue filters it as you type.
+  - The display remote folds away (closed by default on phones) and remembers how you left it.
+- **Missing stats** (Control panel): every map that has a winner but no player stats yet, grouped by match, with the ones that have a scoreboard photo first. **Enter stats** opens the match editor with the captain photos already loaded.
 - **Tiebreakers** (Setup → Tiebreakers), in order: **a. series win–loss record, b. head-to-head result, c. map win percentage, d. coin flip**. Head to head only counts series between the tied teams. When three or more are tied and a rule separates some of them, the rules start again from head to head for the teams still level. Standings show a small tag (H2H, Map %, Coin flip) next to a team that won a tie, with the reason on hover.
   - **Coin flips:** asked for only when tied teams have finished playing. The Control panel shows a 🪙 banner, and in Setup you click who won the real flip (or **Flip for me**). **undo** takes a flip back.
   - **Playoff seeding:** by default all group winners come first, ranked against each other with the same tiebreakers (record → head to head → map win % → coin flip), then all runners-up, and so on. You can switch to a fixed group order (A1, B1, C1, C2, B2, A2 …).
   - **Rearranging:** the playoff seed list has ↑↓ arrows, and **Rearrange group standings** lets staff reorder any group for rulings or forfeits. Both say "Set by staff" and have **Back to automatic**.
-- **Practice runs** (Events page): load a made-up 16-team LAN with teams and rosters already created, at one of three points: **Start of event** (groups, seating and captain links ready, nothing played), **Mid group stage** (morning session on its last round, with live and on-deck matches) or **Playoffs under way**. Run it like the real day, then delete it in Setup. It works in demo mode and with Supabase (with Supabase it's saved like a real event).
+- **Practice runs** (Events page): load a made-up 16-team LAN with teams and rosters already created, at one of three points: **Start of event** (groups, seating and captain links ready, nothing played), **Mid group stage** (morning session on its last round, with live and on-deck matches) or **Playoffs under way**. Run it like the real day. **Delete all practice events** on the Events page removes every practice event you own in one click (your real events stay). It works in demo mode and with Supabase (with Supabase it's saved like a real event).
 - **Awards**: Event MVP, Slayer, Obj King, Bomb Specialist, First Blood, Damage Dealer and Mr. Consistent, calculated automatically. They appear on the Overview, and as an optional TV screen (Setup → Display → Awards).
 - **Export**: Setup → Data → **Download all stats (.zip)**, or **Export stats** on the public Stats page. The ZIP contains `player_maps.csv` (one row per player per map: ideal for pivots, Sheets or pandas), `player_totals.csv`, `teams.csv`, `group_standings.csv` (with map win % and which tiebreaker separated each team), `matches.csv`, `maps.csv`, `vetoes.csv` and a JSON backup.
 - **Display** (`#/display/<event-id>`) — full-screen scenes for the venue TV and OBS: **Seating** (which row each team sits at by session; once the group stage is over it switches to the bracket rows: the team on each row, Live / On deck / Next, and its opponent's row) → **Live** → Groups → K/D Hardpoint → K/D Hijack → K/D S&D → Team stats → Bracket. The **Live** screen shows every live match with its series map count and the map in progress (mode and map), then who's on deck and where each team reports ("AFTERGLOW → Row 5 · IRONCLAD → Row 6"). The bottom bar shows live scores and up next, then scrolls the **category leaders** (overall and per-mode K/D, HP obj time, S&D first bloods and plants + defuses, most kills, damage per map). Switch it off in Setup → Display. Brackets with more than 8 teams get a separate upper and lower screen. Each screen shows for 15–30 s (set in Setup), and a Live / Up next bar runs along the bottom. **It updates by itself** when scores are entered on any other laptop. No refresh needed.

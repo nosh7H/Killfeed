@@ -24,7 +24,10 @@ export function eventSetup() {
   if (!ev.isAdmin) return notAdmin('setup');
   const root = h('div');
   const paint = () => clear(root).append(eventShell('setup', h('div', { class: 'stack' },
-    infoPanel(), formatPanel(), teamsPanel(), accessPanel(), stagePanel(), tiebreakPanel(), timesPanel(), displayNote(), dangerPanel())));
+    ...(ev.manager
+      ? [infoPanel(), formatPanel(), teamsPanel(), accessPanel(), stagePanel(), tiebreakPanel(), timesPanel(), displayNote(), dangerPanel()]
+      : [panel('You’re staff', null, h('p', { class: 'small' }, 'Staff run matches: approve scores, fix map results, enter stats, run coin flips, switch the screens and the current session. Teams, groups, seeding, times and deleting are for admins.')),
+        tiebreakPanel(true)]))));
 
   // ---- event info ----
   function infoPanel() {
@@ -39,8 +42,7 @@ export function eventSetup() {
       h('div', { class: 'grid-4' }, h('label', {}, 'Name', name), h('label', {}, 'Date', date), h('label', {}, 'Venue', venue), h('label', {}, 'Accent color', color)),
       h('label', {}, 'Font style (website)', font),
       h('label', { class: 'check' }, pub, 'Public — anyone with the link can see stats, bracket and the display (no login)'),
-      state.store.mode === 'cloud' ? h('p', { class: 'small' }, 'Admin code for helpers: ', (() => { const c = h('code', { class: 'invite' }, '········'); state.store.eventAdminCode(e.id).then(v => { c.textContent = v || '—'; }); return c; })(),
-        h('span', { class: 'muted' }, ' — they sign in, open Events and choose “Help run an event”.')) : null,
+      state.store.mode === 'cloud' ? h('p', { class: 'small muted' }, 'Admin and staff codes are under Roles & captain links below.') : null,
       h('div', {}, h('button', {
         class: 'btn btn-primary', onclick: async () => {
           await state.store.updateEvent(e.id, { name: name.value.trim() || e.name, starts_on: date.value || null, venue: venue.value.trim() || null, is_public: pub.checked, accent: color.value, settings: { ...eventSettings(ev.event), font: font.value } });
@@ -367,7 +369,7 @@ export function eventSetup() {
   }
 
   // ---- tiebreakers: rules, coin flips, and rearranging a group by hand ----
-  function tiebreakPanel() {
+  function tiebreakPanel(staffOnly = false) {
     const s = ev.settings;
     const labels = Object.keys(ev.standings);
     const coins = ev.coinsNeeded;
@@ -424,6 +426,9 @@ export function eventSetup() {
           h('button', { class: 'icon-btn', 'aria-label': 'Move down', onclick: () => move(i, 1) }, '↓')))));
     };
 
+    if (staffOnly) return panel('Coin flips', 'When the tiebreakers can’t separate teams, flip here.',
+      coins.length ? h('div', { class: 'stack-sm' }, coins.map(flipCard)) : h('div', { class: 'empty-sm' }, 'No coin flips needed right now.'),
+      doneFlips.length ? h('div', { class: 'small muted' }, 'Done: ', doneFlips.map(([, order], i) => h('span', {}, i ? ' · ' : '', order.map(teamName).join(' > ')))) : null);
     return panel('Tiebreakers', 'How tied teams are ordered in the groups and for playoff seeding. You can rearrange anything by hand.',
       h('ol', { class: 'tb-rules' }, TIEBREAKERS.map(([, nm], i) => h('li', {}, h('b', {}, `${'abcd'[i]}.`), ' ', nm))),
       h('p', { class: 'small muted' }, 'Head to head counts series between the tied teams only. When three or more are tied and a rule separates some of them, the rules start again from head to head for the teams still level.'),
@@ -449,7 +454,8 @@ export function eventSetup() {
       ['Viewer', 'r-viewer', 'Anyone with the event link. Bracket, stats, teams, display. Read only.'],
       ['Player', 'r-player', 'Picks their team on the event page (no login). Sees where they sit, when they play, live scores and their team’s stats.'],
       ['Captain', 'r-captain', 'Opens their team’s private link. Everything a player sees, plus: check in, map veto, report scores for you to approve, call staff, fix the roster.'],
-      ['Admin / staff', 'r-admin', 'Signed in with the admin code. Control panel, seating, display, setup, approving scores.'],
+      ['Staff', 'r-admin', 'Signs in with the staff code. Runs matches: approves scores, fixes map winners, enters stats, coin flips, screens. Can’t change teams, groups, seeding or delete anything.'],
+      ['Admin', 'r-admin', 'Signs in with the admin code. Everything staff can do, plus setup, groups, seeding, times, members and deleting.'],
     ].map(([t, c, d]) => h('div', { class: 'role-card' }, h('span', { class: `role-dot ${c}` }), h('div', {}, h('strong', {}, t), h('p', { class: 'small muted' }, d)))));
     const draw = async () => {
       const { randomKey } = await import('../veto.js');
@@ -487,7 +493,45 @@ export function eventSetup() {
       ].filter(Boolean));
     };
     draw();
-    return panel('Roles & captain links', 'Who can do what. Use “Preview as” at the top right to see each role.', roles, body);
+    return panel('Roles & captain links', 'Who can do what. Use “Preview as” at the top right to see each role.', roles, membersBox(), body);
+  }
+
+  // ---- staff & co-admins ----
+  function membersBox() {
+    const box = h('div', { class: 'block-inner stack-sm' });
+    if (state.store.mode !== 'cloud') return h('p', { class: 'small muted' }, 'Staff and co-admins need cloud mode (sign in with Supabase).');
+    const codeEl = v => h('code', { class: 'invite' }, v || '—');
+    const copyBtn = (v, what) => h('button', { class: 'btn btn-sm', onclick: () => { navigator.clipboard.writeText(v); toast(`${what} copied`); } }, 'Copy');
+    const draw = async () => {
+      const [codes, members] = await Promise.all([state.store.eventCodes(ev.event.id).catch(() => null), state.store.eventMembers(ev.event.id).catch(() => [])]);
+      clear(box).append(
+        h('strong', {}, 'Staff & admins'),
+        h('p', { class: 'small muted' }, 'Helpers sign in, open Events, choose “Help run an event” and enter a code. The staff code is the safe one to hand out.'),
+        codes ? h('div', { class: 'stack-sm' },
+          h('div', { class: 'row' }, h('span', { class: 'small', style: 'min-width:90px' }, 'Staff code'), codeEl(codes.staff_code), codes.staff_code ? copyBtn(codes.staff_code, 'Staff code') : null),
+          h('div', { class: 'row' }, h('span', { class: 'small', style: 'min-width:90px' }, 'Admin code'), codeEl(codes.admin_code), codes.admin_code ? copyBtn(codes.admin_code, 'Admin code') : null,
+            h('span', { class: 'small muted' }, 'Full control. Only for people you trust.'))) : null,
+        members.length ? h('div', { class: 'table-wrap' }, h('table', { class: 'data tight' },
+          h('thead', {}, h('tr', {}, h('th', {}, 'Who'), h('th', {}, 'Role'), h('th', {}))),
+          h('tbody', {}, members.map(m => h('tr', {},
+            h('td', {}, m.display_name || 'Unnamed', m.me ? h('span', { class: 'muted small' }, ' (you)') : null),
+            h('td', {}, m.role === 'owner' ? 'Owner' : h('select', {
+              'aria-label': 'Role', onchange: async e => {
+                try { await state.store.setEventMemberRole(ev.event.id, m.user_id, e.target.value); toast('Role updated'); } catch (err) { toast(err.message, 'error'); }
+                draw();
+              },
+            }, h('option', { value: 'staff', selected: m.role === 'staff' }, 'Staff'), h('option', { value: 'admin', selected: m.role === 'admin' }, 'Admin'))),
+            h('td', {}, m.role === 'owner' || m.me ? null : h('button', {
+              class: 'btn btn-sm btn-ghost btn-danger-text', onclick: async () => {
+                if (!(await confirmDialog(`Remove ${m.display_name || 'this helper'} from the event?`, 'Remove'))) return;
+                try { await state.store.removeEventMember(ev.event.id, m.user_id); toast('Removed'); } catch (err) { toast(err.message, 'error'); }
+                draw();
+              },
+            }, 'Remove'))))))) : null);
+    };
+    box.append(h('div', { class: 'muted small' }, 'Loading…'));
+    draw();
+    return box;
   }
 
   function printSheet(rows) {

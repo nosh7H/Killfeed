@@ -3,12 +3,15 @@
 // Stored per map (game) as { source: 'pov' | 'caster', mode, data }:
 //   Hardpoint:        data.hills  = [{ n, t, first: 'us'|'them'|null, broken: bool, us, them, unsure, note }]
 //   Search & Destroy: data.rounds = [{ n, t, side: 'atk'|'def', events: [{ k: 'kill'|'death'|'plant'|'defuse', t }], result: 'W'|'L'|null, unsure }]
+//   Hijack:           data.events = [{ t, k: 'dunk'|'throw'|null, label, side: 'us'|'them'|null }], data.hold = { us, them } seconds
 //   other modes:      data.events = [{ t, label, side: 'us'|'them'|null }]
+//   any mode:         data.series = [[t, us, them], …] score over the map (from Auto-timestamp), for the score chart
+//   S&D events can carry player (gamertag) → first blood / first death by player
 //
 // "first"  = which team scored first on the hill (won the rotation)
 // "broken" = the other team took the hill back at some point during it
 
-export const BREAKDOWN_MODES = { 'Hardpoint': 'hp', 'Search & Destroy': 'snd' };
+export const BREAKDOWN_MODES = { 'Hardpoint': 'hp', 'Search & Destroy': 'snd', 'Hijack': 'hj' };
 export const modeKind = mode => BREAKDOWN_MODES[mode] || 'events';
 export const TEAM_SIZE = 4;
 
@@ -44,18 +47,18 @@ export function hpSummary(data) {
 // ---------- Search & Destroy ----------
 /** Walk a round's kill/death sequence → first blood, every man-count state reached, state at plant. */
 export function sndRound(r, size = TEAM_SIZE) {
-  let us = size, them = size, fb = null, plantState = null, planted = false, defused = false;
+  let us = size, them = size, fb = null, plantState = null, planted = false, defused = false, fbPlayer = null, fdPlayer = null;
   const states = [`${us}v${them}`];
   for (const e of [...(r.events || [])].sort((a, b) => (a.t ?? 0) - (b.t ?? 0))) {
     if (e.k === 'kill' || e.k === 'death') {
-      if (!fb) fb = e.k === 'kill' ? 'us' : 'them';
+      if (!fb) { fb = e.k === 'kill' ? 'us' : 'them'; if (fb === 'us') fbPlayer = e.player || null; else fdPlayer = e.player || null; }
       if (e.k === 'kill') them = Math.max(0, them - 1); else us = Math.max(0, us - 1);
       const s = `${us}v${them}`;
       if (states[states.length - 1] !== s) states.push(s);
     } else if (e.k === 'plant') { planted = true; plantState = `${us}v${them}`; }
     else if (e.k === 'defuse') defused = true;
   }
-  return { fb, states, planted, plantState, defused, side: r.side, result: r.result, aliveEnd: { us, them } };
+  return { fb, fbPlayer, fdPlayer, states, planted, plantState, defused, side: r.side, result: r.result, aliveEnd: { us, them } };
 }
 
 /** Side for round n given the starting side (sides swap every round). */
@@ -69,15 +72,32 @@ export function sndSummary(data, size = TEAM_SIZE) {
   const postPlant = atk.filter(r => r.planted), retake = def.filter(r => r.planted);
   const states = {};
   for (const r of rs) for (const s of new Set(r.states.slice(1))) { (states[s] ||= { n: 0, w: 0 }); states[s].n++; if (r.result === 'W') states[s].w++; }
+  const by = k => rs.reduce((o, r) => { if (r[k]) o[r[k]] = (o[r[k]] || 0) + 1; return o; }, {});
   return {
     rounds: rs.length, won: rs.filter(r => r.result === 'W').length,
     fbRate: rs.length ? fbUs.length / rs.length : null,
+    fdRate: rs.length ? fbThem.length / rs.length : null,
+    firstBloods: fbUs.length, firstDeaths: fbThem.length,
+    fbBy: by('fbPlayer'), fdBy: by('fdPlayer'),
     fbConv: rate(fbUs), fbThemSurvive: rate(fbThem),
     atkRate: rate(atk), defRate: rate(def),
     plants: postPlant.length, postPlantRate: rate(postPlant),
     retakes: retake.length, retakeRate: rate(retake),
     states,
     unsure: (data?.rounds || []).filter(r => r.unsure).length,
+  };
+}
+
+// ---------- Hijack ----------
+export const HJ_POINTS = { dunk: 30, throw: 15 };
+export function hjSummary(data) {
+  const ev = data?.events || [];
+  const c = (k, side) => ev.filter(e => e.k === k && e.side === side).length;
+  const hold = data?.hold || {};
+  return {
+    dunks: { us: c('dunk', 'us'), them: c('dunk', 'them') },
+    throws: { us: c('throw', 'us'), them: c('throw', 'them') },
+    hold: { us: hold.us ?? null, them: hold.them ?? null },
   };
 }
 
@@ -114,10 +134,18 @@ export function breakdownFeatures(mode, data) {
     if (!s.hills) return {};
     return { hp_rotation_rate: s.rotationRate, hp_holds: s.held, hp_breaks: s.broke, hp_got_broken: s.got_broken };
   }
+  if (k === 'hj') {
+    const s = hjSummary(data);
+    const n = s.dunks.us + s.dunks.them + s.throws.us + s.throws.them;
+    if (!n) return {};
+    const f = { hj_dunks: s.dunks.us, hj_throws: s.throws.us, hj_dunks_against: s.dunks.them };
+    if (s.hold.us != null && s.hold.them != null && s.hold.us + s.hold.them) f.hj_hold_share = s.hold.us / (s.hold.us + s.hold.them);
+    return f;
+  }
   if (k === 'snd') {
     const s = sndSummary(data);
     if (!s.rounds) return {};
-    const f = { snd_fb_rate: s.fbRate };
+    const f = { snd_fb_rate: s.fbRate, snd_fd_rate: s.fdRate };
     if (s.fbConv != null) f.snd_fb_conversion = s.fbConv;
     if (s.plants) f.snd_post_plant_rate = s.postPlantRate;
     if (s.retakes) f.snd_retake_rate = s.retakeRate;

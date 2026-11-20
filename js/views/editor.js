@@ -31,8 +31,21 @@ export async function editorView(matchId) {
     }));
     await Promise.all(games.map(async g => { g.media = await state.store.listMedia(g.id); }));
   } else games = [newGame()];
+  // a scoreboard frame sent from Map breakdown → Auto-timestamp
+  let fromVod = null, nFromVod = 0;
+  if (state.vodScoreboard) {
+    for (const x of [].concat(state.vodScoreboard)) {
+      const i = games.findIndex(g => g.id === x.gameId);
+      if (i < 0) continue;
+      const file = new File([x.blob], `map${games[i].game_no}-scoreboard-from-vod.jpg`, { type: 'image/jpeg' });
+      games[i].pending.push({ file, url: URL.createObjectURL(file) });
+      fromVod ??= i; nFromVod++;
+    }
+    state.vodScoreboard = null;
+  }
 
-  let activeGame = 0;
+  let activeGame = fromVod ?? 0;
+  if (fromVod != null) setTimeout(() => toast(nFromVod > 1 ? `Scoreboard frames from the VOD added to ${nFromVod} maps. On each map, click Read on the frame to fill player stats, then Save.` : 'Scoreboard frame from the VOD added to this map. Click Read on it to fill player stats, then Save.', 'success'), 300);
   const root = h('div', { class: 'page editor' });
 
   // Ctrl+V a screenshot straight into the active map

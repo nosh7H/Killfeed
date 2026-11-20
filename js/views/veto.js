@@ -65,10 +65,12 @@ export async function vetoView(vetoId) {
         h('div', { class: 'eyebrow' }, `${ev.event.name} · Map veto`),
         h('h1', {}, teamName(v.team_a), h('span', { class: 'vs' }, 'vs'), teamName(v.team_b)),
         h('div', { class: 'row' },
-          side && ev.myTeam ? h('a', { class: 'btn btn-sm btn-ghost', href: `#/e/${ev.event.id}/me` }, '← My team') : null,
+          side && ev.myTeam ? h('a', { class: 'btn btn-sm btn-ghost', href: `#/e/${ev.event.id}/me`, onclick: () => leftVeto(vetoId) }, '← My team') : null,
           h('span', { class: 'pill' }, side ? `Captain · ${teamName(myTeam)}` : 'Spectating'),
           h('span', { class: 'muted small' }, `${teamName(v.team_a)} starts the veto`))),
       vetoBanner(v, side),
+      // captains: once it's over, straight back to their team screen
+      side && ev.myTeam && v.status === 'done' ? h('a', { class: 'btn btn-primary btn-big', href: `#/e/${ev.event.id}/me`, onclick: () => leftVeto(vetoId) }, 'Back to My team') : null,
       mine && st.kind === 'side' ? sidePicker(v, st) : null,
       h('div', { class: 'veto-layout' },
         h('div', { class: 'stack-sm' }, modesOf(v).map(mode => modeBlock(v, mode, mine && st.mode === mode && st.kind !== 'side' ? st : null))),
@@ -125,9 +127,13 @@ export async function vetoView(vetoId) {
   return root;
 }
 
+/** A captain left the veto page: don't send them back to it automatically (this browser tab). */
+export function leftVeto(vetoId) { try { sessionStorage.setItem(`kf-veto-left-${vetoId}`, '1'); } catch { /* ignore */ } }
+export function hasLeftVeto(vetoId) { try { return sessionStorage.getItem(`kf-veto-left-${vetoId}`) === '1'; } catch { return false; } }
+
 // ---------- admin panel on the match page ----------
 // Three ways to set a match's maps:
-//   1. Captain links (online)      – each captain vetoes from their phone
+//   1. Online                      – each captain vetoes from their phone (their team link opens it)
 //   2. Staff runs it at the desk   – same veto, staff clicks for whichever team is up
 //   3. In person                   – teams veto on paper / out loud, staff types in the maps
 // Staff can switch any time: act for a team, undo a step, or overwrite with in-person maps.
@@ -189,7 +195,7 @@ export function vetoAdminPanel(m, r) {
         h('div', { class: 'row wrap' },
           h('label', { class: 'inline' }, 'Team A (starts the veto)', firstSel)),
         h('div', { class: 'veto-choices' },
-          btn('Create captain links', inPerson ? '' : 'btn-primary', () => create('online'), 'Each captain gets a link and vetoes from their phone'),
+          btn('Start veto', inPerson ? '' : 'btn-primary', () => create('online'), 'Captains veto from their phones: their team link takes them straight to it'),
           btn('Run the veto at the desk', '', () => create('staff'), 'Same veto, but staff clicks for whichever team is up'),
           btn('Enter maps (veto done in person)', inPerson ? 'btn-primary' : '', async () => { manual = true; }, 'Teams decided out loud or on paper. Type in the maps and sides.')),
         h('p', { class: 'hint' }, `Uses the ${ev.settings.mode_order.slice(0, m.best_of).join(' → ')} order and each mode's map pool from Setup. The higher seed is Team A by default.`));
@@ -199,17 +205,9 @@ export function vetoAdminPanel(m, r) {
     wrap.append(vetoBanner(v));
     if (v.status !== 'done') wrap.append(staffBox(v));
 
-    if (v.source !== 'in_person') {
-      const keys = await state.store.vetoKeys(v.id);
-      const base = `${location.origin}${location.pathname}#/veto/${v.id}`;
-      const linkRow = (label, url) => h('div', { class: 'link-row' }, h('span', { class: 'lr-label' }, label), h('code', { class: 'url' }, url),
-        h('button', { class: 'btn btn-sm', onclick: () => { navigator.clipboard.writeText(url); toast('Link copied'); } }, 'Copy'));
-      const links = h('div', { class: 'stack-sm' },
-        keys ? linkRow(`Captain · ${teamName(v.team_a)}`, `${base}?k=${keys.key_a}`) : null,
-        keys ? linkRow(`Captain · ${teamName(v.team_b)}`, `${base}?k=${keys.key_b}`) : null,
-        linkRow('Spectators', base),
-        h('p', { class: 'hint' }, 'Send each captain only their own link. When the veto finishes, the maps fill into this match automatically.'));
-      wrap.append(v.source === 'staff' || v.status === 'done' ? h('details', {}, h('summary', {}, 'Captain and spectator links'), links) : links);
+    if (v.source === 'online' && v.status !== 'done') {
+      // no separate veto links: each captain's team link opens the veto automatically
+      wrap.append(h('p', { class: 'hint' }, `Captains don’t need a new link: when they open their team link (or are already on it), it takes them straight to this veto. When it finishes, the maps fill into this match automatically.`));
     }
     wrap.append(vetoSeriesList(v),
       h('div', { class: 'row wrap' },

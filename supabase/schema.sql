@@ -314,7 +314,8 @@ create table if not exists public.events (
 -- The admin code is secret, so it lives in its own admin-only table (never on the public events row)
 create table if not exists public.event_secrets (
   event_id    uuid primary key references public.events(id) on delete cascade,
-  admin_code  text not null unique default upper(substr(md5(random()::text), 1, 8))
+  admin_code  text not null unique default upper(substr(md5(random()::text), 1, 8)),
+  staff_code  text unique default upper(substr(md5(random()::text), 1, 8))
 );
 -- migrate installs from before this change: move the code off the public row
 do $$
@@ -328,10 +329,14 @@ end $$;
 create table if not exists public.event_admins (
   event_id   uuid not null references public.events(id) on delete cascade,
   user_id    uuid not null references auth.users(id) on delete cascade,
-  role       text not null default 'admin' check (role in ('owner','admin')),
+  role       text not null default 'admin' check (role in ('owner','admin','staff')),
   display_name text,
   primary key (event_id, user_id)
 );
+
+-- older databases: allow the staff role
+alter table public.event_admins drop constraint if exists event_admins_role_check;
+alter table public.event_admins add constraint event_admins_role_check check (role in ('owner','admin','staff'));
 
 create table if not exists public.event_teams (
   id          uuid primary key default gen_random_uuid(),
@@ -424,9 +429,21 @@ create index if not exists ev_matches_idx on public.event_matches(event_id);
 create index if not exists ev_games_idx   on public.event_games(event_id);
 create index if not exists ev_stats_idx   on public.event_stats(event_id);
 
+alter table public.event_secrets add column if not exists staff_code text unique default upper(substr(md5(random()::text), 1, 8));
+update public.event_secrets set staff_code = upper(substr(md5(random()::text || event_id::text), 1, 8)) where staff_code is null;
+
 create or replace function public.is_event_admin(e uuid)
 returns boolean language sql security definer stable set search_path = public as $$
   select exists (select 1 from event_admins where event_id = e and user_id = auth.uid());
+$$;
+-- owner or admin (not staff): setup, teams, groups, seeding, captain links, members
+create or replace function public.is_event_manager(e uuid)
+returns boolean language sql security definer stable set search_path = public as $$
+  select exists (select 1 from event_admins where event_id = e and user_id = auth.uid() and role in ('owner', 'admin'));
+$$;
+create or replace function public.is_event_staff(e uuid)
+returns boolean language sql security definer stable set search_path = public as $$
+  select exists (select 1 from event_admins where event_id = e and user_id = auth.uid() and role = 'staff');
 $$;
 
 create or replace function public.event_visible(e uuid)
@@ -447,13 +464,17 @@ end $$;
 
 create or replace function public.join_event_admin(p_code text, p_display text)
 returns public.events language plpgsql security definer set search_path = public as $$
-declare ev public.events;
+declare ev public.events; new_role text;
 begin
   if auth.uid() is null then raise exception 'Not signed in'; end if;
-  select e.* into ev from events e join event_secrets s on s.event_id = e.id where s.admin_code = upper(trim(p_code));
-  if ev.id is null then raise exception 'Invalid admin code'; end if;
-  insert into event_admins(event_id, user_id, role, display_name) values (ev.id, auth.uid(), 'admin', p_display)
-  on conflict (event_id, user_id) do nothing;
+  -- the admin code makes an admin, the staff code a staff member (an admin code later upgrades staff)
+  select case when s.admin_code = upper(trim(p_code)) then 'admin' else 'staff' end into new_role
+    from event_secrets s where s.admin_code = upper(trim(p_code)) or s.staff_code = upper(trim(p_code));
+  select e.* into ev from events e join event_secrets s on s.event_id = e.id
+    where s.admin_code = upper(trim(p_code)) or s.staff_code = upper(trim(p_code));
+  if ev.id is null then raise exception 'Invalid code'; end if;
+  insert into event_admins(event_id, user_id, role, display_name) values (ev.id, auth.uid(), new_role, p_display)
+  on conflict (event_id, user_id) do update set role = 'admin' where event_admins.role = 'staff' and excluded.role = 'admin';
   return ev;
 end $$;
 
@@ -461,7 +482,7 @@ alter table public.events        enable row level security;
 alter table public.event_admins  enable row level security;
 alter table public.event_secrets enable row level security;
 drop policy if exists ev_secrets_admin on public.event_secrets;
-create policy ev_secrets_admin on public.event_secrets for select using (is_event_admin(event_id));
+create policy ev_secrets_admin on public.event_secrets for select using (is_event_manager(event_id));  -- staff never see the codes
 
 drop policy if exists events_read   on public.events;
 drop policy if exists events_write  on public.events;
@@ -474,7 +495,10 @@ create policy events_delete on public.events for delete
 drop policy if exists ev_admins_read on public.event_admins;
 drop policy if exists ev_admins_delete on public.event_admins;
 create policy ev_admins_read   on public.event_admins for select using (is_event_admin(event_id));
-create policy ev_admins_delete on public.event_admins for delete using (is_event_admin(event_id));
+create policy ev_admins_delete on public.event_admins for delete using ((is_event_manager(event_id) and role <> 'owner') or user_id = auth.uid());
+drop policy if exists ev_admins_update on public.event_admins;
+-- admins switch members between admin and staff; the owner stays the owner
+create policy ev_admins_update on public.event_admins for update using (is_event_manager(event_id) and role <> 'owner') with check (role in ('admin', 'staff'));
 
 do $$
 declare tbl text;
@@ -484,9 +508,64 @@ begin
     execute format('drop policy if exists %1$s_read on public.%1$s', tbl);
     execute format('drop policy if exists %1$s_write on public.%1$s', tbl);
     execute format('create policy %1$s_read on public.%1$s for select using (event_visible(event_id))', tbl);
-    execute format('create policy %1$s_write on public.%1$s for all using (is_event_admin(event_id)) with check (is_event_admin(event_id))', tbl);
+    execute format('drop policy if exists %1$s_ins on public.%1$s', tbl);
+    execute format('drop policy if exists %1$s_upd on public.%1$s', tbl);
+    execute format('drop policy if exists %1$s_del on public.%1$s', tbl);
+    if tbl in ('event_teams', 'event_matches') then
+      -- staff can update (guarded by the triggers below); only admins add or remove teams and matches
+      execute format('create policy %1$s_ins on public.%1$s for insert with check (is_event_manager(event_id))', tbl);
+      execute format('create policy %1$s_upd on public.%1$s for update using (is_event_admin(event_id)) with check (is_event_admin(event_id))', tbl);
+      execute format('create policy %1$s_del on public.%1$s for delete using (is_event_manager(event_id))', tbl);
+    else
+      execute format('create policy %1$s_write on public.%1$s for all using (is_event_admin(event_id)) with check (is_event_admin(event_id))', tbl);
+    end if;
   end loop;
 end $$;
+
+-- ---------- what staff (not admins) may change ----------
+-- events: only the display remote, coin flips and which group session is playing now
+create or replace function public._staff_guard_event() returns trigger language plpgsql security definer set search_path = public as $$
+begin
+  if is_event_staff(new.id) and not is_event_manager(new.id) then
+    if (to_jsonb(new) - 'settings') is distinct from (to_jsonb(old) - 'settings')
+       or ((coalesce(new.settings, '{}') #- '{seating,current}') - 'display' - 'coin_flips' - 'overlays')
+          is distinct from ((coalesce(old.settings, '{}') #- '{seating,current}') - 'display' - 'coin_flips' - 'overlays') then
+      raise exception 'Only event admins can change this. Staff can run matches, the display, stream overlays and coin flips.';
+    end if;
+  end if;
+  return new;
+end $$;
+drop trigger if exists staff_guard_event on public.events;
+create trigger staff_guard_event before update on public.events for each row execute function public._staff_guard_event();
+
+-- teams: staff can pin rows and clear staff calls, nothing else
+create or replace function public._staff_guard_team() returns trigger language plpgsql security definer set search_path = public as $$
+begin
+  if is_event_staff(new.event_id) and not is_event_manager(new.event_id)
+     and (to_jsonb(new) - 'row_no' - 'help') is distinct from (to_jsonb(old) - 'row_no' - 'help') then
+    raise exception 'Only event admins can change teams. Staff can pin rows and handle staff calls.';
+  end if;
+  return new;
+end $$;
+drop trigger if exists staff_guard_team on public.event_teams;
+create trigger staff_guard_team before update on public.event_teams for each row execute function public._staff_guard_team();
+
+-- matches: staff run them (status, rows, queue, live map, check-ins, reports, casted), but not the structure
+create or replace function public._staff_guard_match() returns trigger language plpgsql security definer set search_path = public as $$
+declare keep text[] := array['stage','round','slot','code','src_a','src_b','group_label','team_a','team_b','best_of','match_no','event_id'];
+        k text;
+begin
+  if is_event_staff(new.event_id) and not is_event_manager(new.event_id) then
+    foreach k in array keep loop
+      if (to_jsonb(new) -> k) is distinct from (to_jsonb(old) -> k) then
+        raise exception 'Only event admins can change the schedule or bracket (%).', k;
+      end if;
+    end loop;
+  end if;
+  return new;
+end $$;
+drop trigger if exists staff_guard_match on public.event_matches;
+create trigger staff_guard_match before update on public.event_matches for each row execute function public._staff_guard_match();
 
 -- Event screenshots live in the same private bucket under <event_id>/<game_id>/<file>
 drop policy if exists ev_media_read   on storage.objects;
@@ -562,7 +641,10 @@ create table if not exists public.event_team_keys (
 );
 alter table public.event_team_keys enable row level security;
 drop policy if exists event_team_keys_all on public.event_team_keys;
-create policy event_team_keys_all on public.event_team_keys for all using (is_event_admin(event_id)) with check (is_event_admin(event_id));
+drop policy if exists event_team_keys_read on public.event_team_keys;
+drop policy if exists event_team_keys_write on public.event_team_keys;
+create policy event_team_keys_read  on public.event_team_keys for select using (is_event_admin(event_id));
+create policy event_team_keys_write on public.event_team_keys for all using (is_event_manager(event_id)) with check (is_event_manager(event_id));
 
 alter table public.event_matches add column if not exists checkin jsonb not null default '{}'::jsonb;  -- { <team_id>: timestamp }
 alter table public.event_matches add column if not exists reports jsonb not null default '{}'::jsonb;  -- { <team_id>: { games: [{game_no, us, them}], at } }

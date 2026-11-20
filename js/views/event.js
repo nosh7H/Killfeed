@@ -7,7 +7,7 @@ import { allStandings, bracketView, queueList, leaderRows, modeColumns, teamRows
 import { sortTable } from './table.js';
 import { roundName, seriesResult, gamesByMatch } from '../event-logic.js';
 
-const ADMIN_TABS = [['control', 'Control panel'], ['seating', 'Rows'], ['screens', 'Display'], ['log', 'Activity'], ['setup', 'Setup']];
+const ADMIN_TABS = [['control', 'Control panel'], ['seating', 'Rows'], ['screens', 'Display'], ['overlays', 'Stream overlays'], ['log', 'Activity'], ['setup', 'Setup']];
 const PUBLIC_TABS = [['', 'Overview'], ['bracket', 'Bracket'], ['stats', 'Stats'], ['teams', 'Teams']];
 
 /** Page frame for every event page. Admins get a second, separate admin view
@@ -19,9 +19,12 @@ export function eventShell(active, body) {
   const tabs = admin ? ADMIN_TABS : [...(mine ? [['me', ev.role === 'captain' ? 'My team · Captain' : 'My team']] : []), ...PUBLIC_TABS];
   const e = ev.event;
   return h('div', { class: `page event-page ${admin ? 'is-admin' : ''}` },
-    admin ? h('div', { class: 'admin-strip' }, h('span', { class: 'admin-badge' }, 'Admin'), 'Only event admins and staff can see these pages. Changes go live on the display right away.') : null,
+    admin ? h('div', { class: 'admin-strip' }, h('span', { class: 'admin-badge' }, ev.manager ? 'Admin' : 'Staff'),
+      ev.manager ? 'Only event admins and staff can see these pages. Changes go live on the display right away.'
+        : 'You’re staff: run matches, rows, vetoes, results, the display and coin flips. Groups, seeding, teams and links are set by event admins.') : null,
     ev.preview ? h('div', { class: 'admin-strip preview-strip' }, h('span', { class: 'admin-badge' }, 'Preview'),
-      `You’re seeing what ${ev.role === 'viewer' ? 'a viewer' : `${ev.role === 'captain' ? 'the captain' : 'a player'} of ${teamName(ev.myTeam)}`} sees.`,
+      ev.preview.role === 'staff' ? 'You’re seeing what a staff member sees.'
+        : `You’re seeing what ${ev.role === 'viewer' ? 'a viewer' : `${ev.role === 'captain' ? 'the captain' : 'a player'} of ${teamName(ev.myTeam)}`} sees.`,
       h('span', { class: 'spacer' }),
       h('button', { class: 'btn btn-sm', onclick: async () => { await setPreview(null); go(eventPath('control')); } }, 'Exit preview')) : null,
     h('div', { class: 'event-head' },
@@ -49,10 +52,11 @@ function roleSwitch() {
         onchange: async e => {
           const [role, team] = e.target.value.split(':');
           await setPreview(role === 'admin' ? null : { role, team: team || null });
-          go(role === 'admin' ? eventPath('control') : role === 'viewer' ? eventPath('') : eventPath('me'));
+          go(role === 'admin' || role === 'staff' ? eventPath('control') : role === 'viewer' ? eventPath('') : eventPath('me'));
         },
       },
-      h('option', { value: 'admin:', selected: cur === 'admin:' }, 'Admin'),
+      h('option', { value: 'admin:', selected: cur === 'admin:' }, ev.memberRole === 'staff' ? 'Staff' : 'Admin'),
+      ev.memberRole !== 'staff' ? h('option', { value: 'staff:', selected: cur === 'staff:' }, 'Preview as staff') : null,
       h('option', { value: 'viewer:', selected: cur === 'viewer:' }, 'Preview as viewer'),
       h('optgroup', { label: 'Preview as player' }, teams.map(t => h('option', { value: `player:${t.id}`, selected: cur === `player:${t.id}` }, t.name))),
       h('optgroup', { label: 'Preview as captain' }, teams.map(t => h('option', { value: `captain:${t.id}`, selected: cur === `captain:${t.id}` }, t.name)))));

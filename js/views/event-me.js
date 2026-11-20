@@ -7,6 +7,7 @@ import { ev, eventPath, refreshEvent, teamName, teamTag, teamBadge, spotOf, setM
 import { roundName, gamesByMatch, seriesResult, gameWinner, playerBoard, teamSession, queue, teamBreak } from '../event-logic.js';
 import { vetoNext, stepLabel } from '../veto.js';
 import { eventShell } from './event.js';
+import { hasLeftVeto } from './veto.js';
 
 const HELP_REASONS = ['Tech / PC issue', 'Ready to start', 'Rules question', 'Score dispute', 'Other'];
 /** Phone photo → small JPEG data URL (captains send photos through a checked database function). */
@@ -52,6 +53,14 @@ export function eventMe() {
     const known = m => ev.resolved.get(m.id)?.A && ev.resolved.get(m.id)?.B;
     const next = order.find(m => m.status === 'live') || order.find(m => m.status === 'ondeck') || order.find(m => open(m) && known(m));
     // the match that just ended: captains can still add its photos
+    // captains: a veto in progress for their match opens by itself (once; if they come back, they stay here)
+    if (captain && next) {
+      const v = ev.data.vetoes.find(x => x.match_id === next.id);
+      if (v && v.status !== 'done' && v.source === 'online' && (v.team_a === team.id || v.team_b === team.id) && !hasLeftVeto(v.id)) {
+        // after this page is on screen (the first paint happens before it is)
+        setTimeout(() => { if (root.isConnected && location.hash.includes('/me')) location.hash = `#/veto/${v.id}?k=${encodeURIComponent(ev.captainKey)}`; }, 0);
+      }
+    }
     const justDone = mine.filter(m => m.status === 'final' && m.ended_at && Date.now() - new Date(m.ended_at) < 3 * 3600e3)
       .sort((a, b) => b.ended_at.localeCompare(a.ended_at))[0];
 

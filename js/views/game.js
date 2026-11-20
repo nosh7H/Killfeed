@@ -88,7 +88,7 @@ async function makePlayer(vod) {
   }
   const v = h('video', { src: vod.src, controls: true, preload: 'metadata' });
   host.append(v);
-  return { el: host, getTime: () => v.currentTime, seek: t => { v.currentTime = t; v.play(); } };
+  return { el: host, src: vod.src, getTime: () => v.currentTime, seek: t => { v.currentTime = t; v.play(); } };
 }
 
 async function vodPanel(g, marks, shared = {}) {
@@ -102,9 +102,11 @@ async function vodPanel(g, marks, shared = {}) {
       player = await makePlayer(vod);
       shared.player = player;
       clear(playerSlot).append(player.el);
+      shared.onPlayer?.();
     } catch (e) { clear(playerSlot).append(h('p', { class: 'muted' }, e.message)); }
   };
 
+  shared.openLocal = file => setPlayer({ kind: 'file', src: URL.createObjectURL(file) });
   const vod = parseVod(g.vod_url);
   if (vod) setPlayer(vod);
   else clear(playerSlot).append(h('div', { class: 'empty-sm' },
